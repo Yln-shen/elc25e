@@ -244,7 +244,6 @@ def main():
     
     # 初始化角度转换器
     angle_tracker = tracker(vfov=100, img_width=640)
-    
     # 初始化摄像头
     try:
         cam = camera.Camera(index=2)
