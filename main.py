@@ -8,28 +8,31 @@ import time
 RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180
 
-class Laser:
-    def __init__(self, lower_laser, upper_laser, laser_max_area):
-        self.lower_laser = np.array(lower_laser)
-        self.upper_laser = np.array(upper_laser)
-        self.area = laser_max_area 
+# class Laser:
+#     def __init__(self, lower_laser, upper_laser, laser_max_area):
+#         self.lower_laser = np.array(lower_laser)
+#         self.upper_laser = np.array(upper_laser)
+#         self.area = laser_max_area 
 
-class Rectangle:
-    def __init__(self, black_lower, black_upper, rectangle_min_area):
+# class Rectangle:
+#     def __init__(self, , rectangle_min_area):
+#         self.black_lower = np.array(black_lower)
+#         self.black_upper = np.array(black_upper)
+#         self.rectangle_min_area = rectangle_min_area
+
+class Board:
+    def __init__(self,black_lower, black_upper,rectangle_min_area):
         self.black_lower = np.array(black_lower)
         self.black_upper = np.array(black_upper)
         self.rectangle_min_area = rectangle_min_area
 
-class Board:
-    def __init__(self):
         self.points = []  # 存储四个角点（原始图像坐标）
         self.center = None  # 中心点坐标（原始图像坐标）
         self.relative_points = []  # 相对于图像中心点的坐标
         self.relative_center = None  # 相对于图像中心的中心点坐标
 
 class Detector:
-    def __init__(self, laser_config, rectangle_config, kernel):
-        self.laser = laser_config
+    def __init__(self, rectangle_config, kernel):
         self.rectangle = rectangle_config
         self.kernel = np.ones(kernel, np.uint8)
         self.boards = []  # 存储检测到的板子
@@ -39,11 +42,11 @@ class Detector:
         """处理图像，生成掩膜"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # 激光掩膜
-        laser_mask = cv2.inRange(hsv, self.laser.lower_laser, self.laser.upper_laser)
+        # laser_mask = cv2.inRange(hsv, self.laser.lower_laser, self.laser.upper_laser)
         # 矩形（黑色区域）掩膜
-        rectangle_mask = cv2.inRange(hsv, self.rectangle.black_lower, self.rectangle.black_upper)
+        mask = cv2.inRange(hsv, self.rectangle.black_lower, self.rectangle.black_upper)
         # 合并掩膜（使用 OR 操作）
-        mask = cv2.bitwise_or(laser_mask, rectangle_mask)
+        # mask = cv2.bitwise_or(laser_mask, rectangle_mask)
 
         # 开运算，先腐蚀再膨胀
         opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
