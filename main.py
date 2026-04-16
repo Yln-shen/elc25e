@@ -9,27 +9,30 @@ RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180
 
 class laser:
-    def __init__(self,height_deviation=5,width_deviation=0):
-        self.height_deviation = height_deviation
-        self.width_deviation = width_deviation
+    def __init__(self, width_deviation=0, height_deviation=5):
+        self.width_deviation = width_deviation   # 水平方向偏差（像素）
+        self.height_deviation = height_deviation # 垂直方向偏差（像素）
     
 class Board:
-    def __init__(self,black_lower, black_upper,rectangle_min_area):
-        self.black_lower = np.array(black_lower)
-        self.black_upper = np.array(black_upper)
-        self.rectangle_min_area = rectangle_min_area
-
-        self.points = []  # 存储四个角点（原始图像坐标）
-        self.center = None  # 中心点坐标（原始图像坐标）
-        self.relative_points = []  # 相对于图像中心点的坐标
-        self.relative_center = None  # 相对于图像中心的中心点坐标
-        self.laser_center = None  # 相对于激光中心的坐标
+    def __init__(self): 
+        self.points = []  # 存储四个角点（原始图像坐标）[(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+        self.center = None  # 中心点坐标（原始图像坐标）(x, y)
+        # self.relative_points = []  # 相对于图像中心点的坐标
+        # self.relative_center = None  # 相对于图像中心的中心点坐标
+        self.laser_center = None  # 相对于激光中心的坐标(转换后)
 
 class Detector:
-    def __init__(self, rectangle_config, kernel):
-        self.rectangle = rectangle_config
+    def __init__(self, color, rectangle_min_area, kernel):
+        self.black_lower = np.array(color[0])
+        self.black_upper = np.array(color[1])
+
+        self.rectangle_min_area = rectangle_min_area
+
+        # self.rectangle = rectangle_config
         self.kernel = np.ones(kernel, np.uint8)
-        self.boards = []  # 存储检测到的板子
+
+        self.current_board = None  # 存储当前检测到的板子
+        # self.boards = []  # 存储检测到的板子
         self.frame_center = None  # 存储图像中心点
         self.laser = laser()  # 修改：在构造函数中明确初始化laser对象
 
@@ -37,340 +40,329 @@ class Detector:
         """处理图像，生成掩膜"""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # 矩形（黑色区域）掩膜
-        mask = cv2.inRange(hsv, self.rectangle.black_lower, self.rectangle.black_upper)
+        mask = cv2.inRange(hsv, self.black_lower, self.black_upper)
 
         # 开运算，先腐蚀再膨胀
         opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
         # 闭运算，先膨胀再腐蚀
         closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
 
-        return mask, closing
-
-    def tf_point(self, point, frame):
-        """
-        转换坐标原点，让原点变成图像中心位置
-        
-        Args:
-            point: 原始坐标 (x, y)，基于左上角原点
-            frame: 图像数组，用于获取尺寸信息
-            
-        Returns:
-            tuple: 转换后的坐标 (x', y')，基于图像中心原点
-        """
-        if frame is None:
-            raise ValueError("No frame available for coordinate transformation")
-        
-        if not isinstance(point, (tuple, list)) or len(point) != 2:
-            raise ValueError("point must be a tuple/list of (x, y)")
-        
-        height, width = frame.shape[:2]
-        # 存储图像中心点供后续使用
-        self.frame_center = (width / 2, height / 2)
-        camera_center_x = point[0] - width / 2
-        camera_center_y = point[1] - height / 2
-        camera_center = (camera_center_x, camera_center_y)
-        return camera_center
-    
-    def tf_laser(self,camera_center):
-        """转换激光坐标原点，让原点变成激光点中心位置"""
-        # 修改：camera_center是元组，需要分别取出x和y
-        laser_center_x = camera_center[0] + self.laser.width_deviation
-        laser_center_y = camera_center[1] + self.laser.height_deviation
-        laser_center = (laser_center_x, laser_center_y)
-        return laser_center
+        return closing
     
     def find_board(self, closing):
-        """查找四边形板子"""
-        board_contours = cv2.findContours(closing, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0]
+        """查找四边形,并创建板子"""
+        rectangle_contours = cv2.findContours(closing, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0]
         
-        for contour in board_contours:
+        for contour in rectangle_contours:
             area = cv2.contourArea(contour)
-            if area > self.rectangle.rectangle_min_area:
-                # 逼近多边形
-                peri = cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-                return approx
-            
-        return None 
-               
-    def borad_filter(self,approx):            
-        # 筛选四边形
-        if len(approx) == 4:
+            if area < self.rectangle_min_area:
+                continue
+            # 逼近多边形
+            peri = cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+            # 筛选四边形
+            if len(approx) != 4:
+                continue
             # 获取四个角点
             points = approx.reshape(4, 2)
-            
             # 按左上、左下、右下、右上排序
-            sum_xy = points.sum(axis=1)
-            diff_xy = points[:, 0] - points[:, 1]
+            sum_xy = points.sum(axis=1) #x+y
+            diff_xy = points[:, 0] - points[:, 1] #x-y
             sorted_points = [
                 points[np.argmin(sum_xy)],  # 左上：x+y 最小
-                points[np.argmax(diff_xy)],  # 左下：x-y 最大
+                points[np.argmax(diff_xy)],  # 左下：x-y 最大           
                 points[np.argmax(sum_xy)],  # 右下：x+y 最大
                 points[np.argmin(diff_xy)]   # 右上：x-y 最小
             ]
+
+            # 计算宽度（左上到左下）
+            width = np.linalg.norm(sorted_points[0] - sorted_points[1])
+            # 计算高度（左下到右下）
+            height = np.linalg.norm(sorted_points[1] - sorted_points[2])
+            # 长宽比 = 长边 / 短边
+            ratio = max(width, height) / min(width, height)
             
-            return sorted_points
-        # 没有找到四边形时返回None
+            # 板子应该是矩形，长宽比在1.2~1.6之间
+            # 如果太接近1（正方形）或太大（细长条），就不是我们要的
+            if not (1.2 <= ratio <= 1.6):
+                continue
+
+            board = Board()
+            board.points = [tuple(pt) for pt in sorted_points]  # 转成元组列表
+            
+            # ========== 第7步：计算中心点（像素坐标）==========
+            # 中心点 = 四个角点的平均值
+            cx = int(sum(p[0] for p in board.points) / 4)
+            cy = int(sum(p[1] for p in board.points) / 4)
+            board.center = (cx, cy)
+            return board
         return None
-                
-    def judge_board(self, sorted_points):
-        """判断板子是否符合要求"""
-        # 计算长宽比（A4纸比例筛选）
-        # 计算宽度和高度
-        width = np.linalg.norm(sorted_points[0] - sorted_points[1])  # 左边宽度
-        height = np.linalg.norm(sorted_points[1] - sorted_points[2])  # 底部高度
-        
-        # 计算长宽比（确保比值 >= 1）
-        ratio = max(width, height) / min(width, height)
-        
-        # A4纸比例大约是1.414，允许一定误差（1.2-1.6）
-        if 1.2 <= ratio <= 1.6:
-            return True
-        return False     
+
+    def tf_point(self,board,frame):    
+        # ========== 第8步：转换坐标 ==========# ========== 第8步：转换坐标（以激光笔中心为原点）==========
+        # 8.1 获取图像中心坐标
+        if board is not None:
+            h, w = frame.shape[:2]
+            image_center_x = w / 2
+            image_center_y = h / 2
+            self.frame_center = (image_center_x, image_center_y)
+            # 8.2 激光笔中心在图像中的像素坐标（需要标定）
+            #     width_deviation: 激光光斑相对于图像中心的水平偏移（像素）
+            #     height_deviation: 激光光斑相对于图像中心的垂直偏移（像素）
+            laser_pixel_x = image_center_x + self.laser.width_deviation
+            laser_pixel_y = image_center_y + self.laser.height_deviation
+
+            # 8.3 计算板子中心相对于激光中心的坐标
+            #     原点 = 激光笔中心
+            #     X轴正方向：向右
+            #     Y轴正方向：向下（图像坐标系）
+            laser_center_x = board.center[0] - laser_pixel_x
+            laser_center_y = board.center[1] - laser_pixel_y
+
+            # 8.4 存入 board
+            board.laser_center = (laser_center_x, laser_center_y)
+            
+            # ========== 第9步：存到 current_board，然后返回 ==========
+            self.current_board = board 
+        else:
+            self.current_board = None
+    # self.current_board = None
+
+    def detect(self, frame):
+        closing = self.process(frame)
+        board = self.find_board(closing)
+        self.tf_point(board,frame)
+        return board
     
-    def tf_calculate(self, board, frame_center, frame=None):
-        """计算坐标转换"""
-        # 修正：正确调用坐标转换函数
-        # 1. 将原始中心点转换为相对图像中心的坐标
-        camera_center = self.tf_point(frame_center, frame)
-        
-        # 2. 将相对图像中心的坐标转换为相对激光中心的坐标
-        board.laser_center = self.tf_laser(camera_center)
-        
-        # 将板子添加到列表中
-        self.boards.append(board)
-        
-        # 打印信息
-        if frame is not None:
-            print(f"检测到板子:")
-            print(f"  相对激光中心: ({board.laser_center[0]:.1f}, {board.laser_center[1]:.1f})")
-        
-        self.board = board
-        if board:
-            center = board.laser_center
-            return board, center
-        return board, None
+    def get_laser_center(self):
+        """获取以激光笔为原点的板子坐标"""
+        if self.current_board is None:
+            return None
+        return self.current_board.laser_center
     
-    def draw_boards(self, frame, show_relative=False):
-        """在图像上绘制检测到的板子，可选择显示相对坐标"""
+    def draw_boards(self, frame, show_coords=True):
+        """
+        在图像上绘制检测结果，只显示坐标转换后的坐标系
+        
+        坐标系说明：
+            - 原点 = 激光笔中心
+            - X轴正方向：向右
+            - Y轴正方向：向下
+        """
         result = frame.copy()
+        h, w = frame.shape[:2]
         
-        for board in self.boards:
-            # 绘制四边形边框
-            pts = np.array(board.points, dtype=np.int32)
-            cv2.polylines(result, [pts], True, (0, 255, 0), 2)
+        # 1. 计算图像中心和激光笔中心在像素坐标系中的位置
+        image_center_pixel = (int(w/2), int(h/2))
+        laser_pixel_x = w/2 + self.laser.width_deviation
+        laser_pixel_y = h/2 + self.laser.height_deviation
+        laser_pixel = (int(laser_pixel_x), int(laser_pixel_y))
+        
+        # 2. 绘制坐标轴（以激光笔为原点）
+        axis_length = 50  # 坐标轴长度（像素）
+        # X轴（红色）
+        cv2.arrowedLine(result, laser_pixel, 
+                        (laser_pixel[0] + axis_length, laser_pixel[1]), 
+                        (0, 0, 255), 2, tipLength=0.1)
+        cv2.putText(result, "X", (laser_pixel[0] + axis_length + 5, laser_pixel[1] - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        # Y轴（绿色）
+        cv2.arrowedLine(result, laser_pixel, 
+                        (laser_pixel[0], laser_pixel[1] + axis_length), 
+                        (0, 255, 0), 2, tipLength=0.1)
+        cv2.putText(result, "Y", (laser_pixel[0] + 5, laser_pixel[1] + axis_length + 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # 3. 绘制图像中心（绿色点）- 不显示坐标
+        cv2.circle(result, image_center_pixel, 5, (0, 255, 0), -1)
+        cv2.putText(result, "Image Center", (image_center_pixel[0] + 10, image_center_pixel[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        
+        # 4. 绘制激光笔中心（红色点，原点）
+        cv2.circle(result, laser_pixel, 8, (0, 0, 255), -1)
+        cv2.putText(result, "Laser (Origin)", (laser_pixel[0] + 10, laser_pixel[1] - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        # 激光笔在转换后坐标系中的坐标（总是原点）
+        cv2.putText(result, "Laser Coord: (0, 0)", (laser_pixel[0] + 10, laser_pixel[1] + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        # 5. 如果没有检测到板子
+        if self.current_board is None:
+            cv2.putText(result, "No Board", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            return result
+        
+        board = self.current_board
+        
+        # 6. 绘制四边形边框
+        pts = np.array(board.points, dtype=np.int32)
+        cv2.polylines(result, [pts], True, (255, 0, 0), 2)
+        
+        # 7. 绘制板子中心点（蓝色点）
+        cv2.circle(result, board.center, 6, (255, 0, 0), -1)
+        cv2.putText(result, "Board Center", (board.center[0] + 10, board.center[1] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        
+        # 8. 显示板子中心在激光坐标系中的坐标（只显示转换后的坐标）
+        if show_coords and board.laser_center:
+            # 在板子中心旁边显示坐标
+            coord_text = f"({board.laser_center[0]:.1f}, {board.laser_center[1]:.1f})"
+            cv2.putText(result, coord_text, (board.center[0] - 60, board.center[1] - 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
             
-            # 绘制中心点
-            cv2.circle(result, board.center, 5, (255, 0, 0), -1)
-            
-            # 显示坐标信息
-            if show_relative and hasattr(board, 'relative_center') and board.relative_center:
-                # 显示相对坐标（基于图像中心）
-                cv2.putText(result, 
-                           f"Rel: ({board.relative_center[0]:.1f}, {board.relative_center[1]:.1f})", 
-                           (board.center[0] - 80, board.center[1] - 15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                
-                # # 显示原始坐标
-                # cv2.putText(result, 
-                #            f"Abs: {board.center}", 
-                #            (board.center[0] - 80, board.center[1] + 5),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
-            else:
-                # 只显示原始坐标
-                cv2.putText(result, f"Center: {board.center}", 
-                           (board.center[0] - 50, board.center[1] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            # 在图像左下角显示详细信息
+            info_text = f"Board Coord: ({board.laser_center[0]:.1f}, {board.laser_center[1]:.1f})"
+            cv2.putText(result, info_text, (10, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
-        # 显示检测到的板子数量
-        cv2.putText(result, f'Boards: {len(self.boards)}', (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # 9. 显示状态信息
+        cv2.putText(result, "Board Found", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # 绘制图像中心点（坐标系原点）
-        if hasattr(self, 'frame_center') and self.frame_center:
-            center_pixel = (int(self.frame_center[0]), int(self.frame_center[1]))
-            cv2.circle(result, center_pixel, 8, (0, 0, 255), -1)
-            cv2.putText(result, "Origin (0,0)", 
-                       (center_pixel[0] + 10, center_pixel[1] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)   
         return result
-    
-    def get_relative_coordinates(self):
-        """获取所有板子的相对坐标"""
-        coordinates = []
-        for board in self.boards:
-            if hasattr(board, 'relative_center') and board.relative_center:
-                coordinates.append({
-                    'center': board.relative_center,
-                    'corners': board.relative_points
-                })
-        return coordinates
-    
-class tracker:
+
+class Tracker:
     def __init__(self, vfov=100, img_width=640):
         self.vfov = vfov
         self.img_width = img_width
 
-    def pixel_to_yaw_pitch(self, center):
+    def pixel_to_yaw_pitch(self, laser_center):
         """将像素坐标转换为偏航角和俯仰角"""
-        if center is None:
+        if laser_center is None:
             return 0.0, 0.0
             
-        vfov_radians = self.vfov * DEG2RAD
-        focal_pixel_distance = (self.img_width / 2) / math.tan(vfov_radians / 2)
-        if focal_pixel_distance == 0:
-            focal_pixel_distance = 0.000_000_1
-        yaw = math.atan(center[0] / focal_pixel_distance) * RAD2DEG
-        pitch = math.atan(center[1] / focal_pixel_distance) * RAD2DEG
+        vfov_rad = self.vfov * DEG2RAD
+        
+        # 计算焦距（像素单位）
+        # 焦距 = 图像半宽 / tan(半视场角)
+        focal = (self.img_width / 2) / math.tan(vfov_rad / 2)
+        
+        if abs(focal) < 1e-6:
+            return 0.0, 0.0
+        
+        # 计算角度
+        yaw = math.atan(laser_center[0] / focal) * RAD2DEG
+        pitch = math.atan(laser_center[1] / focal) * RAD2DEG
+        
         return yaw, pitch
-
 def main():
-    """主函数"""
-    # 配置参数
-    # 激光颜色范围（HSV）
-    # laser_config = Laser([100, 50, 200], [160, 255, 255], 50)
-    # 黑色矩形范围（HSV）
-    rectangle_config = Board([0, 0, 0], [180, 255, 70], 3000)
-
-    # 初始化检测器
-    detector = Detector(rectangle_config, (5,5))
-
-    # 初始化串口 - 修改这里，使用你之前定义的Serial类
-    import ser  # 假设你的串口模块文件名为serial_module.py
-    try:
-        ser_port = ser.Serial(port='/dev/ttyACM0', baudrate=115200)
-        print("串口初始化成功")
-    except Exception as e:
-        print(f"串口初始化失败: {e}")
-        ser_port = None
+    """
+    主函数：只做调度
     
-    # 初始化角度转换器
-    angle_tracker = tracker(vfov=100, img_width=640)
+    数据流：
+        1. 读帧
+        2. 生成掩膜
+        3. 检测板子 → 存入 detector.current_board
+        4. 读取 laser_center
+        5. 转换为角度
+        6. 发送到串口
+        7. 显示
+    """
+    # ========== 初始化 ==========
+    # 黑色HSV范围（需要根据实际环境调整）
+    black_range = ([0, 0, 0], [180, 255, 70])
+    
+    # 创建检测器
+    detector = Detector(black_range, 3000, (5,5))
+    
+    # 设置激光偏移（需要标定！）
+    # 假设激光在图像中心右侧5像素，下侧10像素
+    detector.laser.width_deviation = 0    # 激光偏右5像素
+    detector.laser.height_deviation = 50   # 激光偏下10像素
+    
+    # 创建角度计算器
+    angle_tracker = Tracker(vfov=100, img_width=640)
+    
     # 初始化摄像头
     try:
-        cam = camera.Camera(index=2)
-    except Exception as e:
-        print(f"摄像头初始化失败: {e}")
-        print("尝试使用默认摄像头...")
         cam = camera.Camera(index=0)
-
+    except Exception as e:
+        print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
+        cam = camera.Camera(index=0)
+    
+    # 串口（根据实际模块取消注释）
+    import ser
+    ser_port = ser.Serial(port='/dev/ttyUSB0', baudrate=115200)
+    # ser_port = None
+    
     print("开始检测...")
-    print("按 'q' 退出")
-    print("按 's' 保存当前帧")
-    print("按 'c' 清除所有板子记录")
+    print("  坐标系：原点 = 激光笔中心")
+    print("  X正方向：向右，Y正方向：向下")
+    print("  按 'q' 退出，按 's' 保存")
     
     frame_count = 0
     last_send_time = 0
-    send_interval = 0.05  # 发送间隔50ms，20Hz
+    send_interval = 0.05  # 20Hz
     
+    # ========== 主循环 ==========
     while True:
+        # 1. 获取图像
         ret, frame = cam.read()
         if not ret:
-            print("无法获取图像帧")
+            print("无法获取图像")
             break
         
         frame_count += 1
         
-        # 处理图像
-        mask, closing = detector.process(frame)
+        # 2. 生成掩膜
+        # mask = detector.process(frame)
         
-        # 查找四边形
-        sorted_points = detector.find_board(closing)
+        # # 3. 检测板子（结果存入 detector.current_board）
+        # detector.update_board(mask, frame)
+        detector.detect(frame)
+        # 4. 获取以激光笔为原点的板子坐标
+        laser_center = detector.get_laser_center()
         
-        board = None
-        center = None
-        if sorted_points is not None:
-            # 判断板子是否符合要求
-            if detector.judge_board(sorted_points):
-                # 创建新的Board对象来存储识别到的板子信息
-                board = Board([0, 0, 0], [180, 255, 70], 3000)
-                # 设置板子的属性
-                board.points = sorted_points
-                # 计算原始中心点
-                center_x = int(sum(p[0] for p in board.points) / 4)
-                center_y = int(sum(p[1] for p in board.points) / 4)
-                board.center = (center_x, center_y)
-                # 转换坐标
-                board, center = detector.tf_calculate(board, frame)
-        
-        # 计算并发送角度
+        # 5. 计算角度并发送
         current_time = time.time()
-        if center is not None and (current_time - last_send_time) >= send_interval:
-            # 计算yaw和pitch
-            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(center)
+        if laser_center is not None and (current_time - last_send_time) >= send_interval:
+            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(laser_center)
             
-            # 通过串口发送
             if ser_port:
                 try:
-                    ser_port.send_data(yaw, pitch)
-                    print(f"发送角度: Yaw={yaw:.2f}, Pitch={pitch:.2f}")
+                    # ser_port.send_data(yaw, pitch)
+                    print(f"[串口] Yaw={yaw:.2f}°, Pitch={pitch:.2f}°")
                 except Exception as e:
                     print(f"发送失败: {e}")
+            else:
+                print(f"[模拟] Yaw={yaw:.2f}°, Pitch={pitch:.2f}°")
+                print(f"       板子坐标: ({laser_center[0]:.1f}, {laser_center[1]:.1f}) 像素")
             
             last_send_time = current_time
         
-        # 绘制检测结果（设置show_relative=True显示相对坐标）
-        result = detector.draw_boards(frame, show_relative=True)
+        # 6. 绘制并显示
+        result = detector.draw_boards(frame, show_coords=True)
         
-        # 显示角度信息（可选）
-        if center is not None:
-            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(center)
-            cv2.putText(result, f"Yaw: {yaw:.2f} deg", (10, 60), 
+        # 在画面上叠加角度信息
+        if laser_center is not None:
+            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(laser_center)
+            cv2.putText(result, f"Yaw: {yaw:.2f} deg", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(result, f"Pitch: {pitch:.2f} deg", (10, 80), 
+            cv2.putText(result, f"Pitch: {pitch:.2f} deg", (10, 80),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
-        # 显示图像
-        cv2.imshow('Original', frame)
-        cv2.imshow('Mask', mask)
-        cv2.imshow('Closing', closing)
-        cv2.imshow('Board Detection', result)
+        # 显示窗口
+        closing = detector.process(frame)
+        cv2.imshow('Mask', closing)
+        cv2.imshow('Detection', result)
         
-        # 每30帧打印一次相对坐标信息
-        if frame_count % 30 == 0 and detector.boards:
-            print(f"\n--- 第{frame_count}帧检测结果 ---")
-            rel_coords = detector.get_relative_coordinates()
-            for i, coord in enumerate(rel_coords):
-                print(f"板子{i+1} 相对中心: ({coord['center'][0]:.1f}, {coord['center'][1]:.1f})")
-        
-        # 键盘控制
+        # 7. 键盘控制
         key = cv2.waitKey(1) & 0xFF
-        
         if key == ord('q'):
-            print("退出程序")
             break
         elif key == ord('s'):
-            # 保存当前帧
             filename = f"capture_{frame_count}.jpg"
             cv2.imwrite(filename, frame)
-            print(f"已保存图像: {filename}")
-            
-            # 保存检测结果信息
-            if detector.boards:
-                with open(f"detection_{frame_count}.txt", 'w') as f:
-                    f.write(f"帧序号: {frame_count}\n")
-                    f.write(f"检测到的板子数量: {len(detector.boards)}\n")
-                    for i, board in enumerate(detector.boards):
-                        f.write(f"\n板子{i+1}:\n")
-                        f.write(f"  原始中心坐标: {board.center}\n")
-                        if hasattr(board, 'relative_center'):
-                            f.write(f"  相对中心坐标: {board.relative_center}\n")
-                        f.write(f"  四个角点坐标:\n")
-                        for j, point in enumerate(board.points):
-                            f.write(f"    角点{j+1}: {point}\n")
-                print(f"已保存检测信息: detection_{frame_count}.txt")
-        
-        elif key == ord('c'):
-            # 清除板子记录
-            detector.boards = []
-            print("已清除所有板子记录")
-
-    # 释放资源
+            print(f"已保存: {filename}")
+    
+    # ========== 清理 ==========
     if ser_port:
         ser_port.close()
     cam.release()
     cv2.destroyAllWindows()
     print("程序结束")
 
+
 if __name__ == "__main__":
     main()
+
