@@ -19,9 +19,9 @@ class Board:
         self.laser_center = None  # 相对于激光中心的坐标(转换后)
 
 class Detector:
-    def __init__(self, color, rectangle_min_area, kernel,laser=None):
-        self.black_lower = np.array(color[0])
-        self.black_upper = np.array(color[1])
+    def __init__(self, rectangle_min_area, kernel,laser=None):
+        #self.black_lower = np.array(color[0])
+        #self.black_upper = np.array(color[1])
 
         self.rectangle_min_area = rectangle_min_area
 
@@ -38,18 +38,35 @@ class Detector:
 
         self.laser = laser  # 修改：在构造函数中明确初始化laser对象
 
+    # def process(self, frame):
+    #     """处理图像，生成掩膜"""
+    #     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    #     # 矩形（黑色区域）掩膜
+    #     mask = cv2.inRange(hsv, self.black_lower, self.black_upper)
+
+    #     # 开运算，先腐蚀再膨胀
+    #     opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
+    #     # 闭运算，先膨胀再腐蚀
+    #     closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
+
+    #     return closing
+
     def process(self, frame):
-        """处理图像，生成掩膜"""
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        # 矩形（黑色区域）掩膜
-        mask = cv2.inRange(hsv, self.black_lower, self.black_upper)
-
-        # 开运算，先腐蚀再膨胀
+        """处理图像，生成掩膜（使用 Otsu 二值化）"""
+        # 1. 转为灰度图
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        # 2. Otsu 反二值化（因为你的板子是黑色边框/黑色区域）
+        #    THRESH_BINARY_INV: 暗的部分变白，亮的部分变黑
+        #    THRESH_OTSU: 自动计算最佳阈值
+        _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # 3. 形态学操作（去噪、填洞）
         opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
-        # 闭运算，先膨胀再腐蚀
         closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
-
+        
         return closing
+
     
     def find_boards(self, closing):
         """查找四边形,并创建板子"""
@@ -87,7 +104,7 @@ class Detector:
             
             # 板子应该是矩形，长宽比在1.2~1.6之间
             # 如果太接近1（正方形）或太大（细长条），就不是我们要的
-            if not (1.2 <= ratio <= 1.6):
+            if not (1.1 <= ratio <= 1.6):
                 continue
 
             board = Board()
@@ -201,7 +218,7 @@ if __name__ == '__main__':
 
     # 初始化摄像头
     try:
-        cam = Camera(index=0)
+        cam = Camera(index=2)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=2)
@@ -210,7 +227,7 @@ if __name__ == '__main__':
 
     # 初始化检测器（放在循环外，避免重复创建）
     detector = Detector(
-        color=[(0, 0, 0), (180, 255, 70)],  # 黑色范围
+        #color=[(0, 0, 0), (180, 255, 70)],  # 黑色范围
         rectangle_min_area=1000,              # 最小面积
         kernel=(5,5),
         laser=laser                          # 形态学核大小
