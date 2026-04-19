@@ -1,9 +1,11 @@
 import math
 import time
-from Kalman import KalmanFilter 
+from Kalman import KalmanFilter
+from detector import Detector
 
-RAD2DEG = 180 / math.pi
-DEG2RAD = math.pi / 180
+RAD2DEG = 180 / math.pi #弧度转角度
+DEG2RAD = math.pi / 180 #角度转弧度
+
 
 def time_diff(last_time=[None]):
     """计算两次调用之间的时间差，单位为纳秒。"""
@@ -20,7 +22,7 @@ def time_diff(last_time=[None]):
 
 class Tracker:
     def __init__(self, vfov=100, img_width=640,use_kf = True, frame_add = 35):
-        self.vfov = vfov
+        self.vfov = vfov # 视场角
         self.img_width = img_width
         self.use_kf = use_kf  # 是否使用卡尔曼滤波
         self.frame_add = frame_add  # 补帧数
@@ -60,7 +62,7 @@ class Tracker:
         if laser_center is None:
             return 0.0, 0.0
             
-        vfov_rad = self.vfov * DEG2RAD
+        vfov_rad = self.vfov * DEG2RAD #将场视角转为弧度
         
         # 计算焦距（像素单位）
         # 焦距 = 图像半宽 / tan(半视场角)
@@ -75,17 +77,17 @@ class Tracker:
         
         return yaw, pitch
     
-    def track(self,board_center):
+    def track(self,laser_center):
         """跟踪目标,融合卡尔曼滤波"""
         dt = time_diff()  # 计算时间差
 
-        if board_center is None:
+        if laser_center is None:
             if self.use_kf:
                 self.lost += 1
                 if self.lost <= self.frame_add and self.predict:
                     self.update_dt(dt)  # 更新时间步长
                     self.kf_predict()  # 预测下一步
-                    board_center = self.get_kf_state()  # 获取预测的中心点
+                    laser_center = self.get_kf_state()  # 获取预测的中心点
                     self.if_find = True
                 else:
                     print("未检测到目标")
@@ -105,9 +107,9 @@ class Tracker:
             self.lost = 0
             if self.use_kf:
                 self.update_dt(dt)  # 更新时间步长
-                self.kf_update(board_center)  # 更新滤波器
+                self.kf_update(laser_center)  # 更新滤波器
                 self.kf_predict()  # 预测下一步
-                board_center = self.get_kf_state()  # 获取预测的中心点
-        yaw, pitch = self.pixel_to_yaw_pitch(board_center)
+                laser_center = self.get_kf_state()  # 获取预测的中心点
+        yaw, pitch = self.pixel_to_yaw_pitch(laser_center)
         return yaw, pitch
         

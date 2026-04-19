@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
-import cam as camera
+from camera import Camera
 
 # Initialize camera
-cam = camera.Camera(index=2, format='MJPG', width=640, height=320, fps=30)
+cam = Camera(index=2, format='MJPG', width=640, height=320, fps=30)
 
 # Callback function for trackbars (empty since we get values directly)
 def nothing(x):

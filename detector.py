@@ -19,10 +19,11 @@ class Board:
         self.laser_center = None  # 相对于激光中心的坐标(转换后)
 
 class Detector:
-    def __init__(self, rectangle_min_area, kernel,laser=None):
+    def __init__(self, rectangle_min_area, rectangle_max_area, kernel,laser=None):
         #self.black_lower = np.array(color[0])
         #self.black_upper = np.array(color[1])
 
+        self.rectangle_max_area = rectangle_max_area
         self.rectangle_min_area = rectangle_min_area
 
         # self.rectangle = rectangle_config
@@ -74,8 +75,9 @@ class Detector:
         rectangle_contours = cv2.findContours(closing, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0]
         
         for contour in rectangle_contours:
+            #筛选面积
             area = cv2.contourArea(contour)
-            if area < self.rectangle_min_area:
+            if area < self.rectangle_min_area and area > self.rectangle_max_area:
                 continue
             # 逼近多边形
             peri = cv2.arcLength(contour, True)
@@ -109,7 +111,7 @@ class Detector:
 
             board = Board()
             board.points = [tuple(pt) for pt in sorted_points]  # 转成元组列表
-            board.area = area
+            #board.area = area
             # ========== 第7步：计算中心点（像素坐标）==========
             # 中心点 = 四个角点的平均值
             cx = int(sum(p[0] for p in board.points) / 4)
@@ -228,6 +230,7 @@ if __name__ == '__main__':
     # 初始化检测器（放在循环外，避免重复创建）
     detector = Detector(
         #color=[(0, 0, 0), (180, 255, 70)],  # 黑色范围
+        rectangle_max_area=30000,             # 最大面积
         rectangle_min_area=1000,              # 最小面积
         kernel=(5,5),
         laser=laser                          # 形态学核大小
