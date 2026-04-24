@@ -22,7 +22,7 @@ class Camera:
         raise RuntimeError("Could not open any camera")
 
 if __name__ == '__main__':
-    cam = Camera(index=2, format='MJPG', width=640, height=480, fps=30)
+    cam = Camera(index=0, format='MJPG', width=640, height=480, fps=30)
     while True:
         ret, frame = cam.read()
         cv2.imshow('frame', frame)

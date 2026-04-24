@@ -13,17 +13,17 @@ def main():
     主函数：添加卡尔曼滤波效果可视化
     """
     # ========== 初始化 ==========
-    black_range = ([0, 0, 0], [180, 255, 70])
+    #black_range = ([0, 0, 0], [180, 255, 70])
     laser = Laser(width_deviation=0, height_deviation=50)
-    detector = Detector(black_range, 3000, (5,5), laser=laser)
+    detector = Detector(rectangle_max_area=10000, rectangle_min_area=1000, kernel=(5, 5), laser=laser)
     
     # 创建两个 tracker：一个使用 KF，一个不使用
-    tracker_with_kf = Tracker(vfov=100, img_width=640, use_kf=True, frame_add=35)
-    tracker_without_kf = Tracker(vfov=100, img_width=640, use_kf=False, frame_add=35)
+    tracker_kf = Tracker(vfov=100, img_width=640, use_kf=True, frame_add=35)
+    #tracker_without_kf = Tracker(vfov=100, img_width=640, use_kf=False, frame_add=35)
     
     # 初始化摄像头
     try:
-        cam = Camera(index=2)
+        cam = Camera(index=0)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=0)
@@ -71,18 +71,18 @@ def main():
         # 4. 分别用有KF和无KF的tracker处理
         if laser_center is not None:
             # 无KF的原始角度
-            raw_yaw_val, raw_pitch_val = tracker_without_kf.pixel_to_yaw_pitch(laser_center)
+            #raw_yaw_val, raw_pitch_val = tracker_without_kf.pixel_to_yaw_pitch(laser_center)
             # 有KF的滤波角度
-            kf_yaw_val, kf_pitch_val = tracker_with_kf.track(laser_center)
+            kf_yaw_val, kf_pitch_val = tracker_kf.track(laser_center)
         else:
             # 目标丢失时的处理
             raw_yaw_val, raw_pitch_val = 0.0, 0.0
-            kf_yaw_val, kf_pitch_val = tracker_with_kf.track(None)
+            kf_yaw_val, kf_pitch_val = tracker_kf.track(None)
         
         # 5. 记录数据
         timestamps.append(current_time)
-        raw_yaw.append(raw_yaw_val)
-        raw_pitch.append(raw_pitch_val)
+        #raw_yaw.append(raw_yaw_val)
+        #raw_pitch.append(raw_pitch_val)
         kf_yaw.append(kf_yaw_val)
         kf_pitch.append(kf_pitch_val)
         
@@ -109,7 +109,7 @@ def main():
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
         
         # 显示KF状态
-        if tracker_with_kf.predict:
+        if tracker_kf.predict:
             status_text = "KF: Predicting" if not laser_center else "KF: Tracking"
             cv2.putText(result, status_text, (10, 130),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)

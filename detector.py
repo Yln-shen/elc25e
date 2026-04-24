@@ -60,10 +60,10 @@ class Detector:
         # 2. Otsu 反二值化（因为你的板子是黑色边框/黑色区域）
         #    THRESH_BINARY_INV: 暗的部分变白，亮的部分变黑
         #    THRESH_OTSU: 自动计算最佳阈值
-        _, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
         # 3. 形态学操作（去噪、填洞）
-        opening = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
+        opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, self.kernel)
         closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
         
         return closing
@@ -77,7 +77,7 @@ class Detector:
         for contour in rectangle_contours:
             #筛选面积
             area = cv2.contourArea(contour)
-            if area < self.rectangle_min_area and area > self.rectangle_max_area:
+            if area < self.rectangle_min_area or area > self.rectangle_max_area:
                 continue
             # 逼近多边形
             peri = cv2.arcLength(contour, True)
@@ -111,7 +111,7 @@ class Detector:
 
             board = Board()
             board.points = [tuple(pt) for pt in sorted_points]  # 转成元组列表
-            #board.area = area
+            board.area = area
             # ========== 第7步：计算中心点（像素坐标）==========
             # 中心点 = 四个角点的平均值
             cx = int(sum(p[0] for p in board.points) / 4)
@@ -220,24 +220,24 @@ if __name__ == '__main__':
 
     # 初始化摄像头
     try:
-        cam = Camera(index=2)
+        cam = Camera(index=0)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
-        cam = Camera(index=2)
+        cam = Camera(index=0)
 
     laser = Laser(width_deviation=0, height_deviation=50)  # 初始化激光对象
 
     # 初始化检测器（放在循环外，避免重复创建）
     detector = Detector(
         #color=[(0, 0, 0), (180, 255, 70)],  # 黑色范围
-        rectangle_max_area=30000,             # 最大面积
+        rectangle_max_area=60000,             # 最大面积
         rectangle_min_area=1000,              # 最小面积
         kernel=(5,5),
         laser=laser                          # 形态学核大小
     )
 
     
-    frame_count = 0  # 截图计数器
+    fps = 0  # 帧数
 
     print("按 'q' 退出，按 's' 保存截图")
     print("-" * 40)
@@ -249,6 +249,7 @@ if __name__ == '__main__':
             if not ret:
                 print("无法获取图像")
                 break
+            fps += 1
             
             # 2. 调用检测函数
             board = detector.detect(frame)
@@ -260,7 +261,7 @@ if __name__ == '__main__':
             result = detector.draw_boards(frame, show_coords=True)
             
             # 5. 在结果图像上添加帧数显示
-            cv2.putText(result, f"Frame: {frame_count}", (10, 60),
+            cv2.putText(result, f"fps: {fps}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # 6. 如果检测到板子，在终端输出坐标信息

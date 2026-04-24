@@ -5,7 +5,7 @@ from detector import Detector # 导入detector.py
 from tracker import Tracker # 导入tracker.py
 from camera import Camera # 导入camera.py
 from ser import Serial # 导入ser.py
-from Kalman import KalmanFilter # 导入Kalman.py
+#from Kalman import KalmanFilter # 导入Kalman.py
 
 def main():
     """
@@ -25,7 +25,7 @@ def main():
     black_range = ([0, 0, 0], [180, 255, 70])
     
     # 创建检测器
-    detector = Detector(black_range, 3000, (5,5))
+    detector = Detector(rectangle_max_area=30000, rectangle_min_area=10000, kernel=(5,5))
     
     # 设置激光偏移（需要标定！）
     # 假设激光在图像中心右侧5像素，下侧10像素
