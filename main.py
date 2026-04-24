@@ -1,130 +1,158 @@
 import cv2
 import numpy as np
 import time
-from detector import Detector # 导入detector.py
+from detector import Detector,Laser # 导入detector.py
 from tracker import Tracker # 导入tracker.py
 from camera import Camera # 导入camera.py
 from ser import Serial # 导入ser.py
 #from Kalman import KalmanFilter # 导入Kalman.py
 
 def main():
-    """
-    主函数：只做调度
-    
-    数据流：
-        1. 读帧
-        2. 生成掩膜
-        3. 检测板子 → 存入 detector.current_board
-        4. 读取 laser_center
-        5. 转换为角度
-        6. 发送到串口
-        7. 显示
-    """
-    # ========== 初始化 ==========
-    # 黑色HSV范围（需要根据实际环境调整）
-    black_range = ([0, 0, 0], [180, 255, 70])
-    
-    # 创建检测器
-    detector = Detector(rectangle_max_area=30000, rectangle_min_area=10000, kernel=(5,5))
-    
-    # 设置激光偏移（需要标定！）
-    # 假设激光在图像中心右侧5像素，下侧10像素
-    detector.laser.width_deviation = 0    # 激光偏右5像素
-    detector.laser.height_deviation = 50   # 激光偏下10像素
-    
-    # 创建角度计算器
-    angle_tracker = Tracker(vfov=100, img_width=640)
-    
-    # 初始化摄像头
+    # ========== 初始化配置 ==========
+    # 摄像头
     try:
         cam = Camera(index=0)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=0)
-    
-    # 串口（根据实际模块取消注释）
-    import ser
-    ser_port = ser.Serial(port='/dev/ttyUSB0', baudrate=115200)
-    # ser_port = None
-    
-    print("开始检测...")
-    print("  坐标系：原点 = 激光笔中心")
-    print("  X正方向：向右，Y正方向：向下")
-    print("  按 'q' 退出，按 's' 保存")
-    
-    frame_count = 0
-    last_send_time = 0
-    send_interval = 0.05  # 20Hz
-    
+
+    # 激光
+    laser = Laser(width_deviation=0, height_deviation=50)
+
+    # 检测器
+    detector = Detector(
+        rectangle_max_area=60000,
+        rectangle_min_area=1000,
+        kernel=(5, 5),
+        laser=laser
+    )
+
+    # 跟踪器
+    tracker = Tracker(
+        vfov=100,
+        img_width=640,
+        use_kf=True,
+        frame_add=30
+    )
+
+    # 串口通信
+    serial_port = Serial(
+        port='/dev/ttyACM0',
+        baudrate=115200,
+        timeout=1,
+        write_timeout=1
+    )
+
+    # 帧计数
+    fps = 0
+    fps_last = 0
+    fps_timer = time.time()
+    capture_count = 0
+
+    print("按 'q' 退出")
+
     # ========== 主循环 ==========
-    while True:
-        # 1. 获取图像
-        ret, frame = cam.read()
-        if not ret:
-            print("无法获取图像")
-            break
-        
-        frame_count += 1
-        
-        # 2. 生成掩膜
-        # mask = detector.process(frame)
-        
-        # # 3. 检测板子（结果存入 detector.current_board）
-        # detector.update_board(mask, frame)
-        detector.detect(frame)
-        # 4. 获取以激光笔为原点的板子坐标
-        laser_center = detector.get_laser_center()
-        
-        # 5. 计算角度并发送
-        current_time = time.time()
-        if laser_center is not None and (current_time - last_send_time) >= send_interval:
-            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(laser_center)
+    try:
+        while True:
+            # 1. 获取图像
+            ret, frame = cam.read()
+            if not ret:
+                print("无法获取图像")
+                break
+
+            # 2. 计算FPS
+            fps += 1
+            if time.time() - fps_timer >= 1.0:
+                fps_last = fps
+                fps = 0
+                fps_timer = time.time()
+
+            # 3. 检测板子
+            board = detector.detect(frame)
+
+            # 4. 获取掩膜和绘制结果
+            closing = detector.process(frame)
+            result = detector.draw_boards(frame, show_coords=True)
+
+            # 5. 跟踪板子并计算偏航/俯仰角
+            laser_center = detector.laser_center  # 可能为 None
             
-            if ser_port:
-                try:
-                    # ser_port.send_data(yaw, pitch)
-                    print(f"[串口] Yaw={yaw:.2f}°, Pitch={pitch:.2f}°")
-                except Exception as e:
-                    print(f"发送失败: {e}")
+            # 修复：只有检测到板子且有激光中心时才跟踪
+            if laser_center is not None:
+                yaw, pitch = tracker.track(laser_center)
             else:
-                print(f"[模拟] Yaw={yaw:.2f}°, Pitch={pitch:.2f}°")
-                print(f"       板子坐标: ({laser_center[0]:.1f}, {laser_center[1]:.1f}) 像素")
+                yaw, pitch = tracker.track(None)
+
+            # 6. 发送角度到串口 + 终端输出
+            if tracker.if_find and laser_center is not None:
+                # 有跟踪目标且有激光中心坐标
+                serial_port.send_data(yaw=yaw, pitch=pitch)
+                # 终端输出
+                if abs(yaw) > 0.01 or abs(pitch) > 0.01:
+                    print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                          f"偏航: {yaw:>6.1f}°  俯仰: {pitch:>6.1f}°  FPS: {fps_last}", end="")
+                else:
+                    print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                          f"已对准中心  FPS: {fps_last}", end="")
             
-            last_send_time = current_time
-        
-        # 6. 绘制并显示
-        result = detector.draw_boards(frame, show_coords=True)
-        
-        # 在画面上叠加角度信息
-        if laser_center is not None:
-            yaw, pitch = angle_tracker.pixel_to_yaw_pitch(laser_center)
-            cv2.putText(result, f"Yaw: {yaw:.2f} deg", (10, 60),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            cv2.putText(result, f"Pitch: {pitch:.2f} deg", (10, 80),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        
-        # 显示窗口
-        closing = detector.process(frame)
-        cv2.imshow('Mask', closing)
-        cv2.imshow('Detection', result)
-        
-        # 7. 键盘控制
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('s'):
-            filename = f"capture_{frame_count}.jpg"
-            cv2.imwrite(filename, frame)
-            print(f"已保存: {filename}")
-    
-    # ========== 清理 ==========
-    if ser_port:
-        ser_port.close()
-    cam.release()
-    cv2.destroyAllWindows()
-    print("程序结束")
+            elif tracker.if_find and laser_center is None:
+                # 卡尔曼预测状态，没有实际检测到
+                print(f"\r预测跟踪中...  偏航: {yaw:>6.1f}°  俯仰: {pitch:>6.1f}°  FPS: {fps_display}", end="")
+            
+            elif board is not None and board.laser_center is not None:
+                # 检测到板子但跟踪未就绪
+                print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                      f"等待跟踪...  FPS: {fps_last}", end="")
+            
+            else:
+                # 未检测到板子
+                print(f"\r未检测到板子  FPS: {fps_last}", end="")
 
+            # 7. 显示FPS和状态
+            cv2.putText(result, f"FPS: {fps_last}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            
+            # 显示跟踪状态
+            if tracker.if_find:
+                status_text = "Track: OK" if laser_center is not None else "Track: PREDICT"
+                status_color = (0, 255, 0) if laser_center is not None else (0, 255, 255)
+            else:
+                status_text = "Track: LOST"
+                status_color = (0, 0, 255)
+            
+            cv2.putText(result, status_text, (10, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+            
+            # 显示角度信息
+            if tracker.if_find:
+                angle_text = f"Yaw: {yaw:.1f}  Pitch: {pitch:.1f}"
+                cv2.putText(result, angle_text, (10, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
+            # 8. 显示图像
+            cv2.imshow('Mask', closing)
+            cv2.imshow('Detection', result)
+
+            # 9. 键盘控制
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("\n\n退出程序")
+                break
+            elif key == ord('s'):
+                capture_count += 1
+                filename = f"capture_{capture_count:04d}.jpg"
+                cv2.imwrite(filename, frame)
+                print(f"\n已保存截图: {filename}")
+
+    except KeyboardInterrupt:
+        print("\n\n程序被中断")
+
+    finally:
+        # 释放资源
+        cam.cam.release()
+        serial_port.close()
+        cv2.destroyAllWindows()
+        print("资源已释放")
 if __name__ == "__main__":
     main()
 

@@ -217,31 +217,55 @@ class Detector:
     
 if __name__ == '__main__':
     from camera import Camera  # 导入camera.py
-
-    # 初始化摄像头
+    from ser import Serial
+    from tracker import Tracker
+    import time
+    
+    # ========== 初始化配置 ==========
+    # 摄像头
     try:
         cam = Camera(index=0)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=0)
 
-    laser = Laser(width_deviation=0, height_deviation=50)  # 初始化激光对象
+    # 激光
+    laser = Laser(width_deviation=0, height_deviation=50)
 
-    # 初始化检测器（放在循环外，避免重复创建）
+    # 检测器
     detector = Detector(
-        #color=[(0, 0, 0), (180, 255, 70)],  # 黑色范围
-        rectangle_max_area=60000,             # 最大面积
-        rectangle_min_area=1000,              # 最小面积
-        kernel=(5,5),
-        laser=laser                          # 形态学核大小
+        rectangle_max_area=60000,
+        rectangle_min_area=1000,
+        kernel=(5, 5),
+        laser=laser
     )
 
-    
-    fps = 0  # 帧数
+    # 跟踪器
+    tracker = Tracker(
+        vfov=100,
+        img_width=640,
+        use_kf=True,
+        frame_add=35
+    )
+
+    # 串口通信
+    serial_port = Serial(
+        port='/dev/ttyACM0',
+        baudrate=115200,
+        timeout=1,
+        write_timeout=1
+    )
+
+    # 帧计数
+    fps_counter = 0
+    fps_display = 0
+    fps_timer = time.time()
+    capture_count = 0
 
     print("按 'q' 退出，按 's' 保存截图")
     print("-" * 40)
 
+    # ========== 主循环 ==========
     try:
         while True:
             # 1. 获取图像
@@ -249,46 +273,97 @@ if __name__ == '__main__':
             if not ret:
                 print("无法获取图像")
                 break
-            fps += 1
-            
-            # 2. 调用检测函数
+
+            # 2. 计算FPS
+            fps_counter += 1
+            if time.time() - fps_timer >= 1.0:
+                fps_display = fps_counter
+                fps_counter = 0
+                fps_timer = time.time()
+
+            # 3. 检测板子
             board = detector.detect(frame)
-            
-            # 3. 获取处理后的掩膜（用于显示）
+
+            # 4. 获取掩膜和绘制结果
             closing = detector.process(frame)
-            
-            # 4. 绘制检测结果
             result = detector.draw_boards(frame, show_coords=True)
+
+            # 5. 跟踪板子并计算偏航/俯仰角
+            laser_center = detector.laser_center  # 可能为 None
             
-            # 5. 在结果图像上添加帧数显示
-            cv2.putText(result, f"fps: {fps}", (10, 60),
+            # 修复：只有检测到板子且有激光中心时才跟踪
+            if laser_center is not None:
+                yaw, pitch = tracker.track(laser_center)
+            else:
+                yaw, pitch = tracker.track(None)
+
+            # 6. 发送角度到串口 + 终端输出
+            if tracker.if_find and laser_center is not None:
+                # 有跟踪目标且有激光中心坐标
+                serial_port.send_data(yaw=yaw, pitch=pitch)
+                # 终端输出
+                if abs(yaw) > 0.01 or abs(pitch) > 0.01:
+                    print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                          f"偏航: {yaw:>6.1f}°  俯仰: {pitch:>6.1f}°  FPS: {fps_display}", end="")
+                else:
+                    print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                          f"已对准中心  FPS: {fps_display}", end="")
+            
+            elif tracker.if_find and laser_center is None:
+                # 卡尔曼预测状态，没有实际检测到
+                print(f"\r预测跟踪中...  偏航: {yaw:>6.1f}°  俯仰: {pitch:>6.1f}°  FPS: {fps_display}", end="")
+            
+            elif board is not None and board.laser_center is not None:
+                # 检测到板子但跟踪未就绪
+                print(f"\r板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  "
+                      f"等待跟踪...  FPS: {fps_display}", end="")
+            
+            else:
+                # 未检测到板子
+                print(f"\r未检测到板子  FPS: {fps_display}", end="")
+
+            # 7. 显示FPS和状态
+            cv2.putText(result, f"FPS: {fps_display}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            # 6. 如果检测到板子，在终端输出坐标信息
-            if board is not None and board.laser_center is not None:
-                laser_x, laser_y = board.laser_center
-                print(f"\r板子中心相对激光坐标: ({laser_x:>7.1f}, {laser_y:>7.1f})", end="")
+            # 显示跟踪状态
+            if tracker.if_find:
+                status_text = "Track: OK" if laser_center is not None else "Track: PREDICT"
+                status_color = (0, 255, 0) if laser_center is not None else (0, 255, 255)
+            else:
+                status_text = "Track: LOST"
+                status_color = (0, 0, 255)
             
-            # 7. 显示图像
+            cv2.putText(result, status_text, (10, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+            
+            # 显示角度信息
+            if tracker.if_find:
+                angle_text = f"Yaw: {yaw:.1f}  Pitch: {pitch:.1f}"
+                cv2.putText(result, angle_text, (10, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+            # 8. 显示图像
             cv2.imshow('Mask', closing)
             cv2.imshow('Detection', result)
 
-            # 8. 键盘控制
+            # 9. 键盘控制
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 print("\n\n退出程序")
                 break
             elif key == ord('s'):
-                frame_count += 1
-                filename = f"capture_{frame_count:04d}.jpg"
+                capture_count += 1
+                filename = f"capture_{capture_count:04d}.jpg"
                 cv2.imwrite(filename, frame)
                 print(f"\n已保存截图: {filename}")
-                
+
     except KeyboardInterrupt:
         print("\n\n程序被中断")
-        
+
     finally:
         # 释放资源
         cam.cam.release()
+        serial_port.close()
         cv2.destroyAllWindows()
         print("资源已释放")
