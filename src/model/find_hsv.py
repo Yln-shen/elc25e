@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from camera import Camera
+from .camera import Camera
 
 # Initialize camera
 cam = Camera(index=2, format='MJPG', width=640, height=320, fps=30)

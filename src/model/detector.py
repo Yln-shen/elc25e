@@ -19,7 +19,7 @@ class Board:
         self.laser_center = None  # 相对于激光中心的坐标(转换后)
 
 class Detector:
-    def __init__(self, rectangle_min_area, rectangle_max_area, kernel,laser=None):
+    def __init__(self, rectangle_min_area, rectangle_max_area, laser=None):
         #self.black_lower = np.array(color[0])
         #self.black_upper = np.array(color[1])
 
@@ -27,7 +27,7 @@ class Detector:
         self.rectangle_min_area = rectangle_min_area
 
         # self.rectangle = rectangle_config
-        self.kernel = np.ones(kernel, np.uint8)
+        #self.kernel = np.ones(kernel, np.uint8)
 
         self.relative_board = None  # 存储当前检测到的板子
         self.boards = []
@@ -63,16 +63,16 @@ class Detector:
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
         # 3. 形态学操作（去噪、填洞）
-        opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, self.kernel)
-        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
+        # opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, self.kernel)
+        # closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, self.kernel)
         
-        return closing
+        return binary
 
     
-    def find_boards(self, closing):
+    def find_boards(self, binary):
         """查找四边形,并创建板子"""
         boards = []
-        rectangle_contours = cv2.findContours(closing, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0]
+        rectangle_contours = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[0]
         
         for contour in rectangle_contours:
             #筛选面积
