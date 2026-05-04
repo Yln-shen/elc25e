@@ -3,6 +3,7 @@ import enum
 import time
 import struct
 import sys
+import time
 
 # 定义系统参数枚举，对应树莓派例程中的 key
 '''
@@ -32,13 +33,14 @@ class EmmMotor:
     timeout : 读取超时时间(秒)
     motor_id : 电机地址ID
     '''
-    def __init__(self, port='COM', baudrate=115200, timeout=1, motor_id=1,pulse = 3200):
+    def __init__(self, port='COM', baudrate=115200, timeout=1, motor_id=1, pulse = 3200):
         # 保留参数
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.motor_id = motor_id
         self.pulse = pulse
+        # self.angle = angle
         # 初始化
         self.serial_port = None
         # 打开串口
@@ -149,8 +151,12 @@ class EmmMotor:
         self._send_cmd(cmd)
 
     def emm_v5_stop_now(self, addr=None, snF=False):
-        '''立刻停止'''
+        '''立刻停止 - 清空缓冲区并强制发送'''
         addr = self.motor_id if addr is None else addr
+
+        # 【新增】清空输出缓冲区，丢弃之前未发送的运动指令
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.reset_output_buffer()
 
         cmd = bytes([
             addr,
@@ -159,6 +165,10 @@ class EmmMotor:
             0x6B
         ])
         self._send_cmd(cmd)
+        
+        # 【新增】立即强制发送，不等缓冲区满
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.flush()
 
     def emm_v5_en_control(self, addr=None, state=False, snF=False):
         '''
@@ -193,7 +203,7 @@ class EmmMotor:
         ])
         self._send_cmd(cmd)
 
-    def emm_v5_vel_control(self, addr=None, dir=0, vel=0, acc=0, snF=False):
+    def emm_v5_vel_control(self, addr=None, dir=1, vel=0, acc=0, snF=False):
         '''
         速度模式控制
         param dir: 方向 (0=正转, 1=反转)
@@ -337,69 +347,3 @@ class EmmMotor:
         """关闭串口"""
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
-
-if __name__ == '__main__':
-    # ================= 配置区域 =================
-    # 请根据实际情况修改端口号
-    # Windows: 'COM3', 'COM4' 等
-    # Linux/Mac: '/dev/ttyUSB0', '/dev/ttyAMA0' 等
-
-    #pitch:一圈需要脉冲
-
-    SERIAL_PORT = '/dev/ttyACM0' 
-    BAUDRATE = 115200
-    MOTOR_ID_YAW = 1
-    # ===========================================
-
-    print(f"正在尝试连接串口: {SERIAL_PORT} ...")
-
-    motor = None
-    # 1. 初始化电机对象
-    motor = EmmMotor(
-        port=SERIAL_PORT,
-        baudrate=BAUDRATE,
-        timeout=1,
-        motor_id=MOTOR_ID_YAW,
-        pulse=25600
-    )
-    print("串口连接成功！")
-
-    # 2. 读取版本号，验证通信是否正常
-    print("\n--- 测试1: 读取系统版本 ---")
-    ver_data = motor.emm_v5_read_sys_params(s=SysParams.S_VER)
-    if ver_data and len(ver_data) >= 4:
-        # 假设版本信息在返回数据的特定位置，具体需参考协议文档
-        # 这里仅打印原始十六进制数据以便调试
-        print(f"版本响应数据 (Hex): {ver_data.hex()}")
-    else:
-        print("读取版本失败或无响应，请检查接线和ID。")
-        sys.exit(1)
-
-    # 3. 读取当前角度
-    print("\n--- 测试2: 读取当前角度 ---")
-    current_angle = motor.get_current_position_angle()
-    if current_angle is not None:
-        print(f"当前角度: {current_angle:.2f} 度")
-    else:
-        print("读取角度失败")
-
-    # 1. 使能电机
-    motor.emm_v5_en_control(state=True)
-
-    #2. 绝对模式：直接转到 90 度
-    # print("转到 90 度...")
-    # motor.emm_v5_move_to_angle(angle_deg=90.0, vel_rpm=500, acc=100, abs_mode=True)
-    # time.sleep(2)
-
-    # 3. 读取验证
-    pos = motor.get_current_position_angle()
-    #print(f"当前角度: {pos:.2f}")
-
-    # 4. 相对模式：再转 -45 度（往回转 45 度）
-    print("相对转动 -45 度...")
-    motor.emm_v5_move_to_angle(angle_deg=-45.0, vel_rpm=500, acc=100, abs_mode=False)
-    time.sleep(2)
-
-    # 5. 停止并去使能
-    motor.emm_v5_stop_now()
-    motor.emm_v5_en_control(state=False)

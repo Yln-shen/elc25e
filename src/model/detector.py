@@ -156,12 +156,12 @@ class Detector:
 
     def detect(self, frame):
         """主检测函数"""
-        closing = self.process(frame)
-        boards = self.find_boards(closing)
+        binary = self.process(frame)
+        boards = self.find_boards(binary)
         board = self.select_board(boards)
         self.tf_point(board, frame)
         self.relative_board = board
-        return board
+        return binary,board
     
     def draw_boards(self, frame, show_coords=True):
         """
@@ -236,7 +236,6 @@ if __name__ == '__main__':
     detector = Detector(
         rectangle_max_area=60000,
         rectangle_min_area=1000,
-        kernel=(5, 5),
         laser=laser
     )
 
@@ -282,10 +281,10 @@ if __name__ == '__main__':
                 fps_timer = time.time()
 
             # 3. 检测板子
-            board = detector.detect(frame)
+            binary,board = detector.detect(frame)
 
             # 4. 获取掩膜和绘制结果
-            closing = detector.process(frame)
+            # closing = detector.process(frame)
             result = detector.draw_boards(frame, show_coords=True)
 
             # 5. 跟踪板子并计算偏航/俯仰角
@@ -344,7 +343,7 @@ if __name__ == '__main__':
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
             # 8. 显示图像
-            cv2.imshow('Mask', closing)
+            cv2.imshow('Mask', binary)
             cv2.imshow('Detection', result)
 
             # 9. 键盘控制

@@ -22,9 +22,17 @@ class Camera:
         raise RuntimeError("Could not open any camera")
 
 if __name__ == '__main__':
+
     cam = Camera(index=0, format='MJPG', width=640, height=480, fps=30)
+    
+    # # 创建可调窗口并设置大小
+    # cv2.namedWindow('frame', cv2.WINDOW_NORMAL)
+    # cv2.resizeWindow('frame', 680, 420)
+    
     while True:
         ret, frame = cam.read()
+        if not ret:
+            break
         cv2.imshow('frame', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

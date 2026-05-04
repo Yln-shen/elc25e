@@ -11,7 +11,7 @@ def main():
         cam = Camera(index=0)
     except Exception as e:
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
-        cam = Camera(index=0)
+        cam = Camera(index=1)
 
     # 激光
     laser = Laser(width_deviation=0, height_deviation=50)
