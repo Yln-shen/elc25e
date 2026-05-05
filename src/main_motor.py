@@ -2,7 +2,10 @@ import cv2
 import numpy as np
 import time
 import sys
-from model import Detector, Laser, Tracker, Camera, EmmMotor, SysParams
+import gpiod
+from model import Detector, Laser, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
+
+
 
 def main():
     # ========== 初始化配置 ==========
@@ -13,9 +16,9 @@ def main():
         cam = Camera(index=0)
 
     laser = Laser(width_deviation=0, height_deviation=50)
-
+    #检测矩形
     detector = Detector(
-        rectangle_max_area=60000,
+        rectangle_max_area=90000,
         rectangle_min_area=10000,
         laser=laser
     )
@@ -27,14 +30,20 @@ def main():
         frame_add=5
     )
 
+    gpio = GPIO(
+        chip_path='/dev/gpiochip4', 
+        line=18, 
+        consumer='my-led'
+    )
+
     # ===========================================
     # 串口和电机初始化
     # ===========================================
     SERIAL_PORT_PITCH = '/dev/ttyACM0'
-    SERIAL_PORT_YAW   = '/dev/ttyACM1'
+    SERIAL_PORT_YAW   = '/dev/ttyS4'
     BAUDRATE = 115200
-    MOTOR_ID_PITCH = 1
-    MOTOR_ID_YAW   = 2
+    MOTOR_ID_PITCH = 2
+    MOTOR_ID_YAW = 1
 
     print(f"正在尝试连接串口: {SERIAL_PORT_PITCH} ...")
     print(f"正在尝试连接串口: {SERIAL_PORT_YAW} ...")
@@ -110,7 +119,14 @@ def main():
 
             if laser_center is not None:
                 yaw, pitch = tracker.track(laser_center)
-                
+
+                if yaw < 10 and pitch < 10:
+                    gpio.on()
+                    time.sleep(1)
+                else:
+                    gpio.off()
+                    time.sleep(1)
+                    
                 if tracker.if_find:
                     # ===== PD控制 =====
                     # Pitch
@@ -122,8 +138,8 @@ def main():
                     # Yaw
                     yaw_err = yaw
                     yaw_diff = yaw_err - last_yaw_err
-                    yaw_cmd = Kp * yaw_err + Kd * yaw_diff
-                    last_yaw_err = yaw_err
+                    pid_yaw = PID(Kp=0.04, Kd=0)
+                    yaw_cmd = pid_yaw.compute(yaw_err, yaw_diff)
                     
                     # 最小角度阈值
                     min_angle = 0.3
@@ -131,7 +147,7 @@ def main():
                     if abs(pitch) > min_angle:
                         motor_pitch.emm_v5_move_to_angle(
                             angle_deg=pitch_cmd,
-                            vel_rpm=1, 
+                            vel_rpm=2, 
                             acc=0, 
                             abs_mode=False
                         )
@@ -139,7 +155,7 @@ def main():
                     if abs(yaw) > min_angle:
                         motor_yaw.emm_v5_move_to_angle(
                             angle_deg=yaw_cmd,
-                            vel_rpm=1, 
+                            vel_rpm=2, 
                             acc=0, 
                             abs_mode=False
                         )
