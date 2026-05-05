@@ -18,7 +18,7 @@ def main():
     laser = Laser(width_deviation=0, height_deviation=50)
     #检测矩形
     detector = Detector(
-        rectangle_max_area=90000,
+        rectangle_max_area=110000,
         rectangle_min_area=10000,
         laser=laser
     )
@@ -42,8 +42,8 @@ def main():
     SERIAL_PORT_PITCH = '/dev/ttyACM0'
     SERIAL_PORT_YAW   = '/dev/ttyS4'
     BAUDRATE = 115200
-    MOTOR_ID_PITCH = 2
-    MOTOR_ID_YAW = 1
+    MOTOR_ID_PITCH = 1
+    MOTOR_ID_YAW = 2
 
     print(f"正在尝试连接串口: {SERIAL_PORT_PITCH} ...")
     print(f"正在尝试连接串口: {SERIAL_PORT_YAW} ...")
@@ -120,12 +120,17 @@ def main():
             if laser_center is not None:
                 yaw, pitch = tracker.track(laser_center)
 
-                if yaw < 10 and pitch < 10:
-                    gpio.on()
-                    time.sleep(1)
-                else:
-                    gpio.off()
-                    time.sleep(1)
+                # GPIO 状态防抖，只在状态改变时才操作
+                if not hasattr(main, 'gpio_state'):
+                    main.gpio_state = False
+
+                target_near = (abs(yaw) < 10 and abs(pitch) < 10)
+                if target_near != main.gpio_state:
+                    if target_near:
+                        gpio.on()
+                    else:
+                        gpio.off()
+                    main.gpio_state = target_near
                     
                 if tracker.if_find:
                     # ===== PD控制 =====
