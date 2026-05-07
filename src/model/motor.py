@@ -79,7 +79,7 @@ class EmmMotor:
         self.serial_port.write(cmd_bytes)
 
     '''实现核心通信协议''' 
-    def emm_v5_read_sys_params(self, addr=None, s: SysParams = None):
+    def emm_v5_read_sys_params(self, addr=None, s: SysParams = None,timeout = 0.005):
         """
         读取系统参数
         参考树莓派例程 Emm_V5_Read_Sys_Params
@@ -118,13 +118,74 @@ class EmmMotor:
             cmd.append(0x7A)
          
         cmd.append(0x6B) # 校验字节
-        
+
+        # ========== 第2步：发送命令 ==========
         self._send_cmd(bytes(cmd))
         
-        # 读取响应 (根据参数不同，返回长度可能不同，这里尝试读取一定长度)
-        # 注意：实际项目中需要根据具体协议文档确定返回字节数
-        time.sleep(0.01) # 等待驱动器处理
-        return self.serial_port.read(32)
+        # ========== 第3步：非阻塞接收（核心优化）==========
+        start_time = time.time()           # 记录开始时间
+        response = bytearray()              # 动态字节数组，可扩展
+        
+        while time.time() - start_time < timeout:  # 最多等待timeout秒
+            """
+            这个while循环的意义：
+            - timeout=0.005 即最多等待5ms
+            - 每1ms检查一次是否有数据到达
+            - 如果5ms内没收到足够数据，就返回已收到的部分
+            """
+            
+            if self.serial_port.in_waiting:
+                """
+                in_waiting 属性：
+                - 返回串口接收缓冲区中待读取的字节数
+                - 非阻塞！立即返回，不等待
+                - 如果有数据，返回数字；没有数据返回0
+                
+                原代码的问题：
+                - read(32) 是阻塞的，必须读满32字节或超时
+                - 如果只返回7字节，read(32)会一直等剩下的25字节
+                """
+                
+                # 读取所有可用数据
+                response.extend(
+                    self.serial_port.read(self.serial_port.in_waiting)
+                )
+                """
+                extend 方法：
+                - 将读取的字节追加到response末尾
+                - 相比 += 更高效，避免创建新对象
+                - 支持多次读取，拼接完整响应
+                """
+                
+                if len(response) >= 7:
+                    """
+                    为什么是7字节？
+                    根据你的协议，响应格式为：
+                    [地址(1) + 功能码(1) + 方向(1) + 脉冲值(4)] = 7字节
+                    
+                    一旦收到7字节就立即返回，不等剩余数据
+                    节省时间，提高效率！
+                    """
+                    break
+            
+            else:
+                # 没有可用数据，短暂休眠
+                time.sleep(0.001)
+                """
+                为什么要sleep？
+                1. 避免CPU空转（Busy Waiting）
+                2. 让出CPU时间给图像处理和界面更新
+                3. 1ms是很好的平衡点：
+                - 足够快，不会错过数据
+                - 足够慢，不会占满CPU
+                """
+        
+        # ========== 第4步：返回结果 ==========
+        return bytes(response)
+        """
+        注意：可能返回不完整数据（比如超时但只收到3字节）
+        调用者需要检查返回值长度！
+        """
 
     def emm_v5_reset_curpos_to_zero(self, addr=None):
         '''位置清零'''
