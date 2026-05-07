@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import time
 import sys
-import gpiod
 from model import Detector, Laser, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
 
 
@@ -15,10 +14,14 @@ def main():
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=0)
 
-    laser = Laser(width_deviation=0, height_deviation=50)
+    laser = Laser(
+        width_deviation=15,
+        height_deviation=-27
+    )
+    
     #检测矩形
     detector = Detector(
-        rectangle_max_area=110000,
+        rectangle_max_area=130000,
         rectangle_min_area=10000,
         laser=laser
     )
@@ -26,14 +29,14 @@ def main():
     tracker = Tracker(
         vfov=100,
         img_width=640,
-        use_kf=False,
+        use_kf=True,
         frame_add=5
     )
 
     gpio = GPIO(
         chip_path='/dev/gpiochip4', 
-        line=18, 
-        consumer='my-led'
+        line_offset=18, 
+        consumer='laser'
     )
 
     # ===========================================
@@ -69,12 +72,6 @@ def main():
     # 测试通信
     print("\n--- 测试: 读取系统版本 ---")
     ver_data = motor_pitch.emm_v5_read_sys_params(s=SysParams.S_VER)
-    if ver_data and len(ver_data) >= 4:
-        print(f"版本响应数据 (Hex): {ver_data.hex()}")
-    else:
-        print("读取版本失败或无响应，请检查接线和ID。")
-        sys.exit(1)
-
     ver_data = motor_yaw.emm_v5_read_sys_params(s=SysParams.S_VER)
     if ver_data and len(ver_data) >= 4:
         print(f"版本响应数据 (Hex): {ver_data.hex()}")
@@ -124,7 +121,7 @@ def main():
                 if not hasattr(main, 'gpio_state'):
                     main.gpio_state = False
 
-                target_near = (abs(yaw) < 10 and abs(pitch) < 10)
+                target_near = (abs(yaw) < 4 and abs(pitch) < 4)
                 if target_near != main.gpio_state:
                     if target_near:
                         gpio.on()
@@ -244,6 +241,8 @@ def main():
         motor_pitch.emm_v5_en_control(state=False)
         motor_yaw.emm_v5_en_control(state=False)
         cam.cam.release()
+        gpio.off()
+        gpio.release()
         cv2.destroyAllWindows()
         print("资源已释放")
 

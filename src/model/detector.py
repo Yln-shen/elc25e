@@ -79,7 +79,7 @@ class Detector:
             area = cv2.contourArea(contour)
             if area < self.rectangle_min_area or area > self.rectangle_max_area:
                 continue
-            # 逼近多边形
+            #逼近多边形
             peri = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
             # 筛选四边形
