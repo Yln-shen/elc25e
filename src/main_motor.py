@@ -16,7 +16,7 @@ def main():
 
     laser = Laser(
         width_deviation=15,
-        height_deviation=-27
+        height_deviation=5
     )
     
     #检测矩形
@@ -29,7 +29,7 @@ def main():
     tracker = Tracker(
         vfov=100,
         img_width=640,
-        use_kf=True,
+        use_kf=False,
         frame_add=5
     )
 
@@ -121,7 +121,7 @@ def main():
                 if not hasattr(main, 'gpio_state'):
                     main.gpio_state = False
 
-                target_near = (abs(yaw) < 4 and abs(pitch) < 4)
+                target_near = (abs(yaw) < 2 and abs(pitch) < 2)
                 if target_near != main.gpio_state:
                     if target_near:
                         gpio.on()
@@ -145,6 +145,13 @@ def main():
                     
                     # 最小角度阈值
                     min_angle = 0.3
+
+                                        # 主循环中，只在必要时才读取电机状态
+                    if fps % 10 == 0:  # 每30帧（约1秒）读取一次
+                        ver_data = motor_pitch.emm_v5_read_sys_params(
+                            s=SysParams.S_CPOS, 
+                            timeout=0.003  # 3ms超时，更快
+                        )
                     
                     if abs(pitch) > min_angle:
                         motor_pitch.emm_v5_move_to_angle(
