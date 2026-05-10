@@ -5,7 +5,6 @@ import sys
 from model import Detector, Laser, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
 
 
-
 def main():
     # ========== 初始化配置 ==========
     try:
@@ -22,7 +21,7 @@ def main():
     #检测矩形
     detector = Detector(
         rectangle_max_area=130000,
-        rectangle_min_area=10000,
+        rectangle_min_area=1000,
         laser=laser
     )
 
@@ -89,9 +88,12 @@ def main():
     fps_timer = time.time()
     last_print_lines = 1
 
-    # ===== PD控制变量 =====
-    Kp = 0.08   # 比例系数
-    Kd = 0.04   # 微分系数
+    YAW_OFFSET = 5    # 实测后填入
+    PITCH_OFFSET = 5  # 实测后填入
+
+    # ===== PD控制变量（不改）=====
+    Kp = 0.08
+    Kd = 0.04
     last_pitch_err = 0.0
     last_yaw_err = 0.0
 
@@ -114,10 +116,29 @@ def main():
             result = detector.draw_boards(frame, show_coords=True)
             laser_center = detector.laser_center
 
-            if laser_center is not None:
+            # ===== 【改动1】优先使用PNP结果 =====
+            use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
+            
+            if use_pnp:
+                # PNP模式：用3D解算的角度
+                yaw = detector.pnp.yaw - YAW_OFFSET
+                pitch = detector.pnp.pitch - PITCH_OFFSET
+                distance = detector.pnp.distance
+                # KF仍然运行（保持状态更新），但不覆盖PNP角度
+                _ = tracker.track(laser_center)
+                
+            elif laser_center is not None:
+                # 像素模式：PNP失败时降级
                 yaw, pitch = tracker.track(laser_center)
+                distance = None
+            else:
+                # 完全丢失
+                yaw, pitch = 0.0, 0.0
+                distance = None
 
-                # GPIO 状态防抖，只在状态改变时才操作
+            # ===== GPIO和电机控制（不改）=====
+            if laser_center is not None or use_pnp:
+                # GPIO 状态防抖
                 if not hasattr(main, 'gpio_state'):
                     main.gpio_state = False
 
@@ -129,28 +150,26 @@ def main():
                         gpio.off()
                     main.gpio_state = target_near
                     
-                if tracker.if_find:
-                    # ===== PD控制 =====
-                    # Pitch
+                if tracker.if_find or use_pnp:
+                    # Pitch PD
                     pitch_err = pitch
                     pitch_diff = pitch_err - last_pitch_err
                     pitch_cmd = Kp * pitch_err + Kd * pitch_diff
                     last_pitch_err = pitch_err
                     
-                    # Yaw
+                    # Yaw PD
                     yaw_err = yaw
                     yaw_diff = yaw_err - last_yaw_err
                     pid_yaw = PID(Kp=0.04, Kd=0)
                     yaw_cmd = pid_yaw.compute(yaw_err, yaw_diff)
                     
-                    # 最小角度阈值
                     min_angle = 0.3
-
-                                        # 主循环中，只在必要时才读取电机状态
-                    if fps % 10 == 0:  # 每30帧（约1秒）读取一次
+                    
+                    # 主循环中，只在必要时才读取电机状态
+                    if fps % 10 == 0:
                         ver_data = motor_pitch.emm_v5_read_sys_params(
                             s=SysParams.S_CPOS, 
-                            timeout=0.003  # 3ms超时，更快
+                            timeout=0.003
                         )
                     
                     if abs(pitch) > min_angle:
@@ -191,14 +210,18 @@ def main():
                 tracker.lost = 0
                 tracker.kf_position = None
 
-            # ========== 显示部分 ==========
+            # ========== 显示部分（【改动2】增加PNP信息）==========
             sys.stdout.write(f"\033[{last_print_lines}A")
             sys.stdout.write("\033[J")
             
-            if laser_center is not None:
-                print(f"板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})")
+            if laser_center is not None or use_pnp:
+                if use_pnp:
+                    print(f"板子坐标: ({laser_center[0] if laser_center else 0:>7.1f}, {laser_center[1] if laser_center else 0:>7.1f})  [PNP]")
+                    print(f"距离: {distance:.2f}m  ", end="")
+                else:
+                    print(f"板子坐标: ({laser_center[0]:>7.1f}, {laser_center[1]:>7.1f})  [Pixel]")
                 print(f"偏航: {yaw:>6.1f}° cmd: {yaw_cmd:>6.1f}°  俯仰: {pitch:>6.1f}° cmd: {pitch_cmd:>6.1f}°  FPS: {fps_last}")
-                last_print_lines = 2
+                last_print_lines = 2 if not use_pnp else 2
             else:
                 print(f"无目标，电机已停止  FPS: {fps_last}")
                 last_print_lines = 2 if tracker.kf_position is not None else 1
@@ -217,9 +240,12 @@ def main():
             cv2.putText(result, f"FPS: {fps_last}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            if laser_center is not None:
-                status_text = "Track: OK"
+            if use_pnp:
+                status_text = "Track: PNP"
                 status_color = (0, 255, 0)
+            elif laser_center is not None:
+                status_text = "Track: Pixel"
+                status_color = (0, 255, 255)
             else:
                 status_text = "Track: LOST"
                 status_color = (0, 0, 255)
@@ -227,9 +253,12 @@ def main():
             cv2.putText(result, status_text, (10, 80),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
             
-            if laser_center is not None:
+            if laser_center is not None or use_pnp:
                 cv2.putText(result, f"Yaw: {yaw:.1f}  Pitch: {pitch:.1f}", (10, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                if use_pnp:
+                    cv2.putText(result, f"Dist: {distance:.2f}m", (10, 120),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
             cv2.imshow('Mask', binary)
             cv2.imshow('Detection', result)

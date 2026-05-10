@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+from .pnp import PNPSolver
 
 RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180
@@ -38,6 +39,7 @@ class Detector:
         self.laser_center = None  # 存储板子中心相对于激光中心的坐标
 
         self.laser = laser  # 修改：在构造函数中明确初始化laser对象
+        self.pnp = PNPSolver(target_width=0.2, target_height=0.15)
 
     # def process(self, frame):
     #     """处理图像，生成掩膜"""
@@ -92,9 +94,9 @@ class Detector:
             diff_xy = points[:, 0] - points[:, 1] #x-y
             sorted_points = [
                 points[np.argmin(sum_xy)],  # 左上：x+y 最小
-                points[np.argmax(diff_xy)],  # 左下：x-y 最大           
+                points[np.argmin(diff_xy)],  # 左下：x-y 最大           
                 points[np.argmax(sum_xy)],  # 右下：x+y 最大
-                points[np.argmin(diff_xy)]   # 右上：x-y 最小
+                points[np.argmax(diff_xy)]   # 右上：x-y 最小
             ]
 
             # 计算宽度（左上到左下）
@@ -161,6 +163,16 @@ class Detector:
         board = self.select_board(boards)
         self.tf_point(board, frame)
         self.relative_board = board
+
+        # ===== PNP调用 =====
+        if board is not None and len(board.points) == 4:
+            self.pnp.solve(board.points)
+        else:
+            self.pnp.position = None
+            self.pnp.yaw = None
+            self.pnp.pitch = None
+            self.pnp.distance = None
+
         return binary,board
     
     def draw_boards(self, frame, show_coords=True):
