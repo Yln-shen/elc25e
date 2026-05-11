@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import time
 import sys
-from model import Detector, Laser, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
+from model import Detector, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
 
 
 def main():
@@ -13,16 +13,16 @@ def main():
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=0)
 
-    laser = Laser(
-        width_deviation=15,
-        height_deviation=5
-    )
+    # laser = Laser(
+    #     width_deviation=15,
+    #     height_deviation=5
+    # )
     
     #检测矩形
     detector = Detector(
         rectangle_max_area=130000,
         rectangle_min_area=1000,
-        laser=laser
+        # laser=laser
     )
 
     tracker = Tracker(

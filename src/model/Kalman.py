@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 
 class KalmanFilter:
-    def __init__(self, R=0.5, Q=0.01):
+    def __init__(self, R=0.1, Q=0.01):
         self.dt = 1/30  # 默认30fps的时间步长
         self.kf = cv2.KalmanFilter(2, 1)  # 状态维度=2(位置+速度), 观测维度=1(位置)
         
