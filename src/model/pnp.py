@@ -4,7 +4,7 @@ import numpy as np
 class PNPSolver:
     """PNP位姿解算器"""
     
-    def __init__(self, target_width=0.297, target_height=0.210, img_width = 640, img_height = 480, fov = 100 ):
+    def __init__(self, target_width=0.260, target_height=0.173, img_width = 640, img_height = 480, fov = 100 ):
         self.target_width = target_width
         self.target_height = target_height
         self.img_width = img_width
@@ -74,7 +74,7 @@ class PNPSolver:
         self.yaw = np.degrees(np.arctan2(x, z))
         self.pitch = np.degrees(np.arctan2(y, z))
 
-        # print("角点:", [(f"{p[0]:.1f},{p[1]:.1f}") for p in image_points])
-        # print("左上:", image_points[0], "右下:", image_points[2])
+        print("角点:", [(f"{p[0]:.1f},{p[1]:.1f}") for p in image_points])
+        print("左上:", image_points[0], "右下:", image_points[2])
         
         return True

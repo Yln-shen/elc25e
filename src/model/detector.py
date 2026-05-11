@@ -14,7 +14,7 @@ class Board:
         self.camera_center = None  # 相对于摄像头中心的坐标(转换后) ← 改
 
 class Detector:
-    def __init__(self, rectangle_min_area, rectangle_max_area):
+    def __init__(self, rectangle_min_area, rectangle_max_area,use_pnp=True):
         self.rectangle_max_area = rectangle_max_area
         self.rectangle_min_area = rectangle_min_area
 
@@ -24,7 +24,8 @@ class Detector:
         self.board_center = None  # 存储板子中心点坐标
         self.camera_center_offset = None  # 存储板子中心相对于摄像头中心的坐标 ← 改
 
-        self.pnp = PNPSolver(target_width=0.2, target_height=0.15)
+        self.use_pnp = use_pnp
+        self.pnp = PNPSolver()
 
     def process(self, frame):
         """处理图像，生成掩膜（使用 Otsu 二值化）"""
@@ -126,9 +127,11 @@ class Detector:
         self.relative_board = board
 
         # PNP调用
-        if board is not None and len(board.points) == 4:
+        if self.use_pnp and board is not None and len(board.points) == 4:
+            print("正在调用PNP, 角点数:", len(board.points)) 
             self.pnp.solve(board.points)
         else:
+            print("PNP跳过, board:", board is not None, "角点数:", len(board.points) if board else 0) 
             self.pnp.position = None
             self.pnp.yaw = None
             self.pnp.pitch = None

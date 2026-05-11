@@ -1,5 +1,5 @@
 from .camera import Camera
-from .detector import Detector,Laser
+from .detector import Detector
 from .tracker import Tracker
 from .Kalman import KalmanFilter
 from .ser import Serial
