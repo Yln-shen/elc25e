@@ -62,9 +62,9 @@ class Detector:
             diff_xy = points[:, 0] - points[:, 1] #x-y
             sorted_points = [
                 points[np.argmin(sum_xy)],  # 左上：x+y 最小
-                points[np.argmin(diff_xy)],  # 左下：x-y 最小 ← 之前排查角点排序时改的
+                points[np.argmax(diff_xy)],  # 左下：x-y 最小 ← 之前排查角点排序时改的
                 points[np.argmax(sum_xy)],  # 右下：x+y 最大
-                points[np.argmax(diff_xy)]   # 右上：x-y 最大 ← 之前排查角点排序时改的
+                points[np.argmin(diff_xy)]   # 右上：x-y 最大 ← 之前排查角点排序时改的
             ]
 
             # 计算宽度（左上到左下）

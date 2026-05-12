@@ -7,9 +7,6 @@ class PNPSolver:
     def __init__(self, target_width=0.260, target_height=0.173):
         self.target_width = target_width
         self.target_height = target_height
-        # self.img_width = img_width
-        # self.img_height = img_height
-        # self.fov = fov
         
         half_w = target_width / 2
         half_h = target_height / 2
@@ -20,32 +17,42 @@ class PNPSolver:
             [ half_w, -half_h, 0],  # 右上
         ], dtype=np.float32)
         
-        self.camera_matrix = np.array([
-            [488.37965847, 0,           349.66906926],
-            [0,            489.58753605, 269.70256221],
-            [0,            0,           1.0]
-        ], dtype=np.float32)
-        self.dist_coeffs = np.array([[-1.59281849, 28.0467834, 0.00554433, 0.03506375, -136.647373]])
+        # ============================================================
+        # 🔴 重要：使用你实际标定的参数
+        # ============================================================
         
-        #self.dist_coeffs = np.zeros((5, 1), dtype=np.float32) # 无畸变
+        # 方法1：手动输入标定结果（推荐用于测试）
+        self.camera_matrix = np.array([
+            [499.356, 0.0,    334.895],
+            [0.0,    496.552, 231.149],
+            [0.0,    0.0,     1.0    ]
+        ], dtype=np.float32)
+        
+        self.dist_coeffs = np.array([
+            [0.233, -0.445, -0.022, -0.000, 0.347]
+        ], dtype=np.float32)
+        
+        # # 方法2：从标定文件加载（推荐用于部署）
+        # self._load_calibration()
         
         self.position = None    # 3D位置 (x, y, z)
         self.distance = None    # 距离（米）
         self.yaw = None         # 偏航角（度）
         self.pitch = None       # 俯仰角（度）
-    # def _calc_camera_matrix(self):
-    #     fov_rad = self.fov * np.pi / 180
-    #     fx = (self.img_width / 2) / np.tan(fov_rad / 2)
-    #     fy = fx
-    #     cx = self.img_width / 2
-    #     cy = self.img_height / 2
-        
-    #     return np.array([
-    #         [fx, 0, cx],
-    #         [0, fy, cy],
-    #         [0, 0,  1 ]
-    #     ], dtype=np.float32)
-
+    
+    def _load_calibration(self):
+        """从保存的标定文件加载参数"""
+        try:
+            calib_data = np.load("camera_calib_target.npz")
+            self.camera_matrix = calib_data['camera_matrix']
+            self.dist_coeffs = calib_data['dist_coeffs']
+            print("✓ 成功加载标定参数")
+            print(f"  内参:\n{self.camera_matrix}")
+            print(f"  畸变: {self.dist_coeffs.ravel()}")
+        except Exception as e:
+            print(f"✗ 加载标定文件失败: {e}")
+            print("  使用默认参数")
+    
     def solve(self, image_points):
         if len(image_points) != 4:
             self.position = None
@@ -56,15 +63,15 @@ class PNPSolver:
         
         img_pts = np.array(image_points, dtype=np.float32).reshape(-1, 2)
         
-        #success：求解是否成功
-        #rvec：旋转向量，表示靶子相对相机的姿态
-        #tvec：平移向量，表示靶子中心在相机坐标系下的3D位置（单位：米）
+        # success：求解是否成功
+        # rvec：旋转向量，表示靶子相对相机的姿态
+        # tvec：平移向量，表示靶子中心在相机坐标系下的3D位置（单位：米）
         success, rvec, tvec = cv2.solvePnP(
             self.object_points,    # 3D点：靶子四个角的真实坐标（米）
             img_pts,               # 2D点：图像上四个角的像素坐标
             self.camera_matrix,    # 相机内参矩阵
-            self.dist_coeffs,      # 畸变系数（全零）
-            flags=cv2.SOLVEPNP_SQPNP  # 求解方法
+            self.dist_coeffs,      # ⚠️ 现在是正确的畸变系数
+            flags=cv2.SOLVEPNP_IPPE  # 或者用 SOLVEPNP_ITERATIVE
         )
         
         if not success:
@@ -79,8 +86,10 @@ class PNPSolver:
         self.distance = np.linalg.norm(self.position)
         self.yaw = np.degrees(np.arctan2(x, z))
         self.pitch = np.degrees(np.arctan2(y, z))
-
-        print("角点:", [(f"{p[0]:.1f},{p[1]:.1f}") for p in image_points])
-        print("左上:", image_points[0], "右下:", image_points[2])
+        
+        # 调试输出（可选）
+        # print(f"位置: x={x:.3f}, y={y:.3f}, z={z:.3f}m")
+        # print(f"距离: {self.distance:.3f}m")
+        # print(f"偏航: {self.yaw:.1f}°, 俯仰: {self.pitch:.1f}°")
         
         return True
