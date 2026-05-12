@@ -4,12 +4,12 @@ import numpy as np
 class PNPSolver:
     """PNP位姿解算器"""
     
-    def __init__(self, target_width=0.260, target_height=0.173, img_width = 640, img_height = 480, fov = 100 ):
+    def __init__(self, target_width=0.260, target_height=0.173):
         self.target_width = target_width
         self.target_height = target_height
-        self.img_width = img_width
-        self.img_height = img_height
-        self.fov = fov
+        # self.img_width = img_width
+        # self.img_height = img_height
+        # self.fov = fov
         
         half_w = target_width / 2
         half_h = target_height / 2
@@ -20,25 +20,31 @@ class PNPSolver:
             [ half_w, -half_h, 0],  # 右上
         ], dtype=np.float32)
         
-        self.camera_matrix = self._calc_camera_matrix()
-        self.dist_coeffs = np.zeros((5, 1), dtype=np.float32) # 无畸变
+        self.camera_matrix = np.array([
+            [488.37965847, 0,           349.66906926],
+            [0,            489.58753605, 269.70256221],
+            [0,            0,           1.0]
+        ], dtype=np.float32)
+        self.dist_coeffs = np.array([[-1.59281849, 28.0467834, 0.00554433, 0.03506375, -136.647373]])
+        
+        #self.dist_coeffs = np.zeros((5, 1), dtype=np.float32) # 无畸变
         
         self.position = None    # 3D位置 (x, y, z)
         self.distance = None    # 距离（米）
         self.yaw = None         # 偏航角（度）
         self.pitch = None       # 俯仰角（度）
-    def _calc_camera_matrix(self):
-        fov_rad = self.fov * np.pi / 180
-        fx = (self.img_width / 2) / np.tan(fov_rad / 2)
-        fy = fx
-        cx = self.img_width / 2
-        cy = self.img_height / 2
+    # def _calc_camera_matrix(self):
+    #     fov_rad = self.fov * np.pi / 180
+    #     fx = (self.img_width / 2) / np.tan(fov_rad / 2)
+    #     fy = fx
+    #     cx = self.img_width / 2
+    #     cy = self.img_height / 2
         
-        return np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0, 0,  1 ]
-        ], dtype=np.float32)
+    #     return np.array([
+    #         [fx, 0, cx],
+    #         [0, fy, cy],
+    #         [0, 0,  1 ]
+    #     ], dtype=np.float32)
 
     def solve(self, image_points):
         if len(image_points) != 4:
