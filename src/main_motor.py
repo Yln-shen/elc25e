@@ -1,4 +1,4 @@
-# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存）
+# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存）- 无桌面版本
 
 import cv2
 import numpy as np
@@ -133,7 +133,7 @@ def main():
         PITCH_OFFSET_INIT = 0.6
         print("首次运行，使用默认滑条值")
 
-    # ===== 滑条初始化 =====
+    # ===== 滑条初始化（注释掉窗口创建部分） =====
     OFFSET_RANGE = 5.0        # ±5度
     SLIDER_MAX = 200
 
@@ -145,6 +145,10 @@ def main():
     cv2.createTrackbar('YAW_OFFSET', 'Control', yaw_slider_init, SLIDER_MAX, lambda x: None)
     cv2.createTrackbar('PITCH_OFFSET', 'Control', pitch_slider_init, SLIDER_MAX, lambda x: None)
 
+    # 直接使用初始值作为固定偏移
+    YAW_OFFSET = YAW_OFFSET_INIT
+    PITCH_OFFSET = PITCH_OFFSET_INIT
+
     print(f"滑条初始: YAW={YAW_OFFSET_INIT:.2f}° (滑条:{yaw_slider_init}), PITCH={PITCH_OFFSET_INIT:.2f}° (滑条:{pitch_slider_init})")
     print(f"滑条范围: ±{OFFSET_RANGE}°")
     print("按 'q' 退出")
@@ -153,8 +157,8 @@ def main():
     max_errors = 10
 
     # 初始化滑条变量，避免退出时未定义
-    YAW_OFFSET = YAW_OFFSET_INIT
-    PITCH_OFFSET = PITCH_OFFSET_INIT
+    YAW_OFFSET = YAW_OFFSET_INIT  # 已在上面定义
+    PITCH_OFFSET = PITCH_OFFSET_INIT  # 已在上面定义
 
     try:
         while True:
@@ -187,7 +191,7 @@ def main():
                     print(f"检测失败: {e}")
                     continue
 
-                # 读取滑条
+                # 读取滑条（注释掉，使用固定值）
                 YAW_OFFSET = (cv2.getTrackbarPos('YAW_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
                 PITCH_OFFSET = (cv2.getTrackbarPos('PITCH_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
 
@@ -304,56 +308,59 @@ def main():
                     tracker.lost = 0
                     tracker.kf_position = None
 
-                    # ===== 终端显示 =====
-                    if frame_count % 5 == 0:
-                        sys.stdout.write(f"\033[2A")  # ← 先固定上移2行
-                        sys.stdout.write("\033[J")     # ← 清除下面所有内容
+                # ===== 终端显示 =====
+                if frame_count % 5 == 0:
+                    # 注释掉控制字符，改用普通print
+                    sys.stdout.write(f"\033[2A")  # ← 先固定上移2行
+                    sys.stdout.write("\033[J")     # ← 清除下面所有内容
 
-                        if use_pnp or camera_center_offset is not None:
-                            if use_pnp:
-                                cx = camera_center_offset[0] if camera_center_offset is not None else 0
-                                cy = camera_center_offset[1] if camera_center_offset is not None else 0
-                                print(f"偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  "
-                                    f"Y:{yaw:.1f}° P:{pitch:.1f}°  "
-                                    f"滑条:Y={YAW_OFFSET:.1f}° P={PITCH_OFFSET:.1f}°  "
-                                    f"FPS:{fps_last}")
-                                yaw_remain = abs(yaw)
-                                pitch_remain = abs(pitch)
-                                if yaw_remain < 0.5 and pitch_remain < 0.5:
-                                    print("✓ 已对准!")
-                                else:
-                                    print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
-                                        f"电机cmd: Y={yaw_cmd:.2f}° P={pitch_cmd:.2f}°")
-                                last_print_lines = 2
+                    if use_pnp or camera_center_offset is not None:
+                        if use_pnp:
+                            cx = camera_center_offset[0] if camera_center_offset is not None else 0
+                            cy = camera_center_offset[1] if camera_center_offset is not None else 0
+                            print(f"偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  "
+                                  f"Y:{yaw:.1f}° P:{pitch:.1f}°  "
+                                  f"滑条:Y={YAW_OFFSET:.1f}° P={PITCH_OFFSET:.1f}°  "
+                                  f"FPS:{fps_last}")
+                            yaw_remain = abs(yaw)
+                            pitch_remain = abs(pitch)
+                            if yaw_remain < 0.5 and pitch_remain < 0.5:
+                                print("✓ 已对准!")
                             else:
-                                print(f"像素模式  Y:{yaw:.1f}° P:{pitch:.1f}°  FPS:{fps_last}")
-                                last_print_lines = 1
-                        elif detector.relative_board is not None:
-                            print(f"检测到靶子但PNP未就绪  FPS:{fps_last}")
-                            last_print_lines = 1
+                                print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
+                                      f"电机cmd: Y={yaw_cmd:.2f}° P={pitch_cmd:.2f}°")
+                            last_print_lines = 2
                         else:
-                            print(f"无目标  FPS:{fps_last}")
+                            print(f"像素模式  Y:{yaw:.1f}° P:{pitch:.1f}°  FPS:{fps_last}")
                             last_print_lines = 1
+                    elif detector.relative_board is not None:
+                        print(f"检测到靶子但PNP未就绪  FPS:{fps_last}")
+                        last_print_lines = 1
+                    else:
+                        print(f"无目标  FPS:{fps_last}")
+                        last_print_lines = 1
 
-                        sys.stdout.flush()
+                    sys.stdout.flush()
 
-                # ===== 图像显示 =====
+                # ===== 图像显示（注释掉） =====
                 cv2.putText(result, f"FPS: {fps_last}", (10, 60),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
+                
                 if use_pnp:
                     cv2.putText(result, "PNP", (10, 80),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     if distance is not None:
                         cv2.putText(result, f"Dist:{distance:.2f}m", (10, 100),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
+                
                 cv2.imshow('Detection', result)
 
+                #按键检测（注释掉窗口按键，改用简单的延时）
                 key = cv2.waitKey(10) & 0xFF
                 if key == ord('q'):
                     print("\n退出程序")
                     break
+                time.sleep(0.01)  # 替代waitKey的延时
 
                 # 定期释放内存
                 if frame_count % 100 == 0:
@@ -402,6 +409,7 @@ def main():
             gpio.release()
         except:
             pass
+        # 注释掉窗口销毁
         cv2.destroyAllWindows()
         cv2.waitKey(1)
         print("资源已释放")
