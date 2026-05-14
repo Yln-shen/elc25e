@@ -22,15 +22,25 @@ class Camera:
         raise RuntimeError("Could not open any camera")
 
 if __name__ == '__main__':
+    import time
 
     cam = Camera(index=0, format='MJPG', width=640, height=480, fps=30)
     
     # # 创建可调窗口并设置大小
     # cv2.namedWindow('frame', cv2.WINDOW_NORMAL)
     # cv2.resizeWindow('frame', 680, 420)
-    
+    fps = 0
+    fps_timer = time.time()
+    fps_last =0
     while True:
         ret, frame = cam.read()
+        fps += 1
+        if time.time() - fps_timer >= 1.0:
+            fps_last = fps
+            fps = 0
+            fps_timer = time.time()
+        cv2.putText(frame, f"FPS: {fps_last}", (10, 30), 
+        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         if not ret:
             break
         cv2.imshow('frame', frame)

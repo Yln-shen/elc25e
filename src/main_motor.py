@@ -1,9 +1,10 @@
-# main_motor.py - 完整优化版（防重启 + 滑条初始化修正）
+# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存）
 
 import cv2
 import numpy as np
 import time
 import sys
+import os
 import gc
 from model import Detector, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
 
@@ -81,6 +82,7 @@ def main():
 
     # 测试通信
     print("\n--- 测试: 读取系统版本 ---")
+
     try:
         ver_data = motor_pitch.emm_v5_read_sys_params(s=SysParams.S_VER, timeout=0.5)
         ver_data = motor_yaw.emm_v5_read_sys_params(s=SysParams.S_VER, timeout=0.5)
@@ -103,14 +105,35 @@ def main():
     frame_count = 0
 
     # ===== PD控制变量 =====
-    Kp = 0.08
-    Kd = 0.04
+    Kp_pitch = 0.05
+    Kd_pitch = 0.1
+    Kp_yaw = 0.1
+    Kd_yaw = 0.1
     last_pitch_err = 0.0
     last_yaw_err = 0.0
 
-    # ===== 滑条初始化（基于实际PNP测量值）=====
-    YAW_OFFSET_INIT = -0.5    # x=-0.011, z=1.318 → arctan(-0.011/1.318)
-    PITCH_OFFSET_INIT = 0.6   # y=0.014, z=1.318  → arctan(0.014/1.318)
+    val_pitch = 2
+    val_yaw = 6
+
+    # ===== 读取上次保存的滑条值 =====
+    OFFSET_FILE = "slider_offset.txt"
+    if os.path.exists(OFFSET_FILE):
+        try:
+            with open(OFFSET_FILE, 'r') as f:
+                saved = f.read().strip().split(',')
+                YAW_OFFSET_INIT = float(saved[0])
+                PITCH_OFFSET_INIT = float(saved[1])
+            print(f"读取上次滑条值: YAW={YAW_OFFSET_INIT:.2f}°, PITCH={PITCH_OFFSET_INIT:.2f}°")
+        except:
+            YAW_OFFSET_INIT = -0.5
+            PITCH_OFFSET_INIT = 0.6
+            print("读取滑条文件失败，使用默认值")
+    else:
+        YAW_OFFSET_INIT = -0.5
+        PITCH_OFFSET_INIT = 0.6
+        print("首次运行，使用默认滑条值")
+
+    # ===== 滑条初始化 =====
     OFFSET_RANGE = 5.0        # ±5度
     SLIDER_MAX = 200
 
@@ -122,12 +145,16 @@ def main():
     cv2.createTrackbar('YAW_OFFSET', 'Control', yaw_slider_init, SLIDER_MAX, lambda x: None)
     cv2.createTrackbar('PITCH_OFFSET', 'Control', pitch_slider_init, SLIDER_MAX, lambda x: None)
 
-    print(f"滑条初始: YAW={YAW_OFFSET_INIT}° (滑条:{yaw_slider_init}), PITCH={PITCH_OFFSET_INIT}° (滑条:{pitch_slider_init})")
+    print(f"滑条初始: YAW={YAW_OFFSET_INIT:.2f}° (滑条:{yaw_slider_init}), PITCH={PITCH_OFFSET_INIT:.2f}° (滑条:{pitch_slider_init})")
     print(f"滑条范围: ±{OFFSET_RANGE}°")
     print("按 'q' 退出")
 
     error_count = 0
     max_errors = 10
+
+    # 初始化滑条变量，避免退出时未定义
+    YAW_OFFSET = YAW_OFFSET_INIT
+    PITCH_OFFSET = PITCH_OFFSET_INIT
 
     try:
         while True:
@@ -167,6 +194,9 @@ def main():
                 # 优先使用PNP
                 use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
 
+                # 优先使用PNP
+                use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
+
                 if use_pnp:
                     yaw = detector.pnp.yaw - YAW_OFFSET
                     pitch = detector.pnp.pitch - PITCH_OFFSET
@@ -192,7 +222,7 @@ def main():
                     if not hasattr(main, 'gpio_state'):
                         main.gpio_state = False
 
-                    target_near = (abs(yaw) < 2 and abs(pitch) < 2)
+                    target_near = (abs(yaw) < 0.5 and abs(pitch) < 0.5)
                     if target_near != main.gpio_state:
                         try:
                             if target_near:
@@ -204,49 +234,47 @@ def main():
                             print(f"GPIO操作失败: {e}")
 
                     if use_pnp or tracker.if_find:
-                        # Pitch控制
-                        pitch_err = pitch
-                        pitch_cmd = Kp * pitch_err + Kd * (pitch_err - last_pitch_err)
-                        last_pitch_err = pitch_err
-                        pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
-
-                        # Yaw控制
-                        yaw_err = yaw
-                        yaw_cmd = Kp * yaw_err + Kd * (yaw_err - last_yaw_err)
-                        last_yaw_err = yaw_err
-                        yaw_cmd = max(-5.0, min(5.0, yaw_cmd))
-
                         min_angle = 0.3
+
+                        # ===== Pitch =====
+                        pitch_abs = abs(pitch)
+                        if pitch_abs > min_angle:
+                            if pitch_abs < 2.0:
+                                pitch_cmd = 0.3 if pitch > 0 else -0.3
+                            else:
+                                pitch_cmd = Kp_pitch * pitch + Kd_pitch * (pitch - last_pitch_err)
+                                pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
+                            last_pitch_err = pitch
+                            try:
+                                motor_pitch.emm_v5_move_to_angle(
+                                    angle_deg=pitch_cmd, vel_rpm=val_pitch, acc=0, abs_mode=False)
+                            except Exception as e:
+                                print(f"Pitch电机命令失败: {e}")
+                        else:
+                            pitch_cmd = 0.0
+
+                        # ===== Yaw =====
+                        yaw_abs = abs(yaw)
+                        if yaw_abs > min_angle:
+                            if yaw_abs < 2.0:
+                                yaw_cmd = 0.3 if yaw > 0 else -0.3
+                            else:
+                                yaw_cmd = Kp_yaw * yaw + Kd_yaw * (yaw - last_yaw_err)
+                                yaw_cmd = max(-5.0, min(5.0, yaw_cmd))
+                            last_yaw_err = yaw
+                            try:
+                                motor_yaw.emm_v5_move_to_angle(
+                                    angle_deg=yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
+                            except Exception as e:
+                                print(f"Yaw电机命令失败: {e}")
+                        else:
+                            yaw_cmd = 0.0
 
                         if frame_count % 10 == 0:
                             try:
-                                ver_data = motor_pitch.emm_v5_read_sys_params(
-                                    s=SysParams.S_CPOS, timeout=0.1
-                                )
+                                ver_data = motor_pitch.emm_v5_read_sys_params(s=SysParams.S_CPOS, timeout=0.1)
                             except:
                                 pass
-
-                        if abs(pitch) > min_angle:
-                            try:
-                                motor_pitch.emm_v5_move_to_angle(
-                                    angle_deg=pitch_cmd,
-                                    vel_rpm=2,
-                                    acc=0,
-                                    abs_mode=False
-                                )
-                            except Exception as e:
-                                print(f"Pitch电机命令失败: {e}")
-
-                        if abs(yaw) > min_angle:
-                            try:
-                                motor_yaw.emm_v5_move_to_angle(
-                                    angle_deg=yaw_cmd,
-                                    vel_rpm=2,
-                                    acc=0,
-                                    abs_mode=False
-                                )
-                            except Exception as e:
-                                print(f"Yaw电机命令失败: {e}")
                     else:
                         yaw_cmd, pitch_cmd = 0.0, 0.0
                         try:
@@ -263,7 +291,6 @@ def main():
                     center_error = None
                     last_pitch_err = 0.0
                     last_yaw_err = 0.0
-
                     try:
                         motor_pitch.emm_v5_vel_control(dir=0, vel=0, acc=0)
                         motor_yaw.emm_v5_vel_control(dir=0, vel=0, acc=0)
@@ -272,31 +299,43 @@ def main():
                         motor_yaw.emm_v5_stop_now()
                     except:
                         pass
-
                     tracker.if_find = False
                     tracker.predict = False
                     tracker.lost = 0
                     tracker.kf_position = None
 
-                # ===== 终端显示 =====
-                if frame_count % 5 == 0:
-                    sys.stdout.write(f"\033[{last_print_lines}A")
-                    sys.stdout.write("\033[J")
+                    # ===== 终端显示 =====
+                    if frame_count % 5 == 0:
+                        sys.stdout.write(f"\033[2A")  # ← 先固定上移2行
+                        sys.stdout.write("\033[J")     # ← 清除下面所有内容
 
-                    if use_pnp or camera_center_offset is not None:
-                        if use_pnp:
-                            cx = camera_center_offset[0] if camera_center_offset is not None else 0
-                            cy = camera_center_offset[1] if camera_center_offset is not None else 0
-                            print(f"偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  Y:{yaw:.1f} P:{pitch:.1f}  滑条:Y={YAW_OFFSET:.1f} P={PITCH_OFFSET:.1f}  FPS:{fps_last}")
+                        if use_pnp or camera_center_offset is not None:
+                            if use_pnp:
+                                cx = camera_center_offset[0] if camera_center_offset is not None else 0
+                                cy = camera_center_offset[1] if camera_center_offset is not None else 0
+                                print(f"偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  "
+                                    f"Y:{yaw:.1f}° P:{pitch:.1f}°  "
+                                    f"滑条:Y={YAW_OFFSET:.1f}° P={PITCH_OFFSET:.1f}°  "
+                                    f"FPS:{fps_last}")
+                                yaw_remain = abs(yaw)
+                                pitch_remain = abs(pitch)
+                                if yaw_remain < 0.5 and pitch_remain < 0.5:
+                                    print("✓ 已对准!")
+                                else:
+                                    print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
+                                        f"电机cmd: Y={yaw_cmd:.2f}° P={pitch_cmd:.2f}°")
+                                last_print_lines = 2
+                            else:
+                                print(f"像素模式  Y:{yaw:.1f}° P:{pitch:.1f}°  FPS:{fps_last}")
+                                last_print_lines = 1
+                        elif detector.relative_board is not None:
+                            print(f"检测到靶子但PNP未就绪  FPS:{fps_last}")
                             last_print_lines = 1
                         else:
-                            print(f"像素模式  Y:{yaw:.1f} P:{pitch:.1f}  FPS:{fps_last}")
+                            print(f"无目标  FPS:{fps_last}")
                             last_print_lines = 1
-                    else:
-                        print(f"无目标  FPS:{fps_last}")
-                        last_print_lines = 1
 
-                    sys.stdout.flush()
+                        sys.stdout.flush()
 
                 # ===== 图像显示 =====
                 cv2.putText(result, f"FPS: {fps_last}", (10, 60),
@@ -332,6 +371,14 @@ def main():
 
     except KeyboardInterrupt:
         print("\n程序被中断")
+
+    # ===== 保存滑条值 =====
+    try:
+        with open(OFFSET_FILE, 'w') as f:
+            f.write(f"{YAW_OFFSET:.2f},{PITCH_OFFSET:.2f}")
+        print(f"滑条值已保存: YAW={YAW_OFFSET:.2f}°, PITCH={PITCH_OFFSET:.2f}°")
+    except Exception as e:
+        print(f"保存滑条值失败: {e}")
 
     finally:
         print("正在释放资源...")
