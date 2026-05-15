@@ -1,4 +1,4 @@
-# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存）- 无桌面版本
+# main_motor.py - GUI模式下增加窗口存在性检查
 
 import cv2
 import numpy as np
@@ -10,6 +10,11 @@ from model import Detector, Tracker, Camera, EmmMotor, SysParams, GPIO, PID
 
 
 def main():
+    # ========== 检测是否无GUI模式 ==========
+    HAS_GUI = os.environ.get('DISPLAY') is not None
+    if not HAS_GUI:
+        print("检测到无图形界面环境，GUI相关功能已禁用")
+
     # ========== 初始化配置 ==========
     try:
         cam = Camera(index=0)
@@ -116,7 +121,7 @@ def main():
     val_yaw = 6
 
     # ===== 读取上次保存的滑条值 =====
-    OFFSET_FILE = "slider_offset.txt"
+    OFFSET_FILE = "/home/radxa/elc25e/slider_offset.txt"
     if os.path.exists(OFFSET_FILE):
         try:
             with open(OFFSET_FILE, 'r') as f:
@@ -133,32 +138,27 @@ def main():
         PITCH_OFFSET_INIT = 0.6
         print("首次运行，使用默认滑条值")
 
-    # ===== 滑条初始化（注释掉窗口创建部分） =====
-    OFFSET_RANGE = 5.0        # ±5度
+    # ===== 滑条初始化 =====
+    OFFSET_RANGE = 5.0
     SLIDER_MAX = 200
 
     yaw_slider_init = int((YAW_OFFSET_INIT + OFFSET_RANGE) / (2 * OFFSET_RANGE) * SLIDER_MAX)
     pitch_slider_init = int((PITCH_OFFSET_INIT + OFFSET_RANGE) / (2 * OFFSET_RANGE) * SLIDER_MAX)
 
-    # cv2.namedWindow('Control', cv2.WINDOW_NORMAL)
-    # cv2.resizeWindow('Control', 400, 150)
-    # cv2.createTrackbar('YAW_OFFSET', 'Control', yaw_slider_init, SLIDER_MAX, lambda x: None)
-    # cv2.createTrackbar('PITCH_OFFSET', 'Control', pitch_slider_init, SLIDER_MAX, lambda x: None)
+    if HAS_GUI:
+        cv2.namedWindow('Control', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Control', 400, 150)
+        cv2.createTrackbar('YAW_OFFSET', 'Control', yaw_slider_init, SLIDER_MAX, lambda x: None)
+        cv2.createTrackbar('PITCH_OFFSET', 'Control', pitch_slider_init, SLIDER_MAX, lambda x: None)
 
-    # 直接使用初始值作为固定偏移
-    YAW_OFFSET = YAW_OFFSET_INIT
-    PITCH_OFFSET = PITCH_OFFSET_INIT
-
-    print(f"滑条初始: YAW={YAW_OFFSET_INIT:.2f}° (滑条:{yaw_slider_init}), PITCH={PITCH_OFFSET_INIT:.2f}° (滑条:{pitch_slider_init})")
+    print(f"滑条初始: YAW={YAW_OFFSET_INIT:.2f}°, PITCH={PITCH_OFFSET_INIT:.2f}°")
     print(f"滑条范围: ±{OFFSET_RANGE}°")
-    print("按 'q' 退出")
 
     error_count = 0
     max_errors = 10
 
-    # 初始化滑条变量，避免退出时未定义
-    # YAW_OFFSET = YAW_OFFSET_INIT  # 已在上面定义
-    # PITCH_OFFSET = PITCH_OFFSET_INIT  # 已在上面定义
+    YAW_OFFSET = YAW_OFFSET_INIT
+    PITCH_OFFSET = PITCH_OFFSET_INIT
 
     try:
         while True:
@@ -182,7 +182,6 @@ def main():
                     fps = 0
                     fps_timer = time.time()
 
-                # 检测
                 try:
                     binary, board = detector.detect(frame)
                     result = detector.draw_boards(frame, show_coords=True)
@@ -191,14 +190,10 @@ def main():
                     print(f"检测失败: {e}")
                     continue
 
-                # 读取滑条（注释掉，使用固定值）
-                # YAW_OFFSET = (cv2.getTrackbarPos('YAW_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
-                # PITCH_OFFSET = (cv2.getTrackbarPos('PITCH_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
+                if HAS_GUI:
+                    YAW_OFFSET = (cv2.getTrackbarPos('YAW_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
+                    PITCH_OFFSET = (cv2.getTrackbarPos('PITCH_OFFSET', 'Control') / SLIDER_MAX) * (2 * OFFSET_RANGE) - OFFSET_RANGE
 
-                # 优先使用PNP
-                use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
-
-                # 优先使用PNP
                 use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
 
                 if use_pnp:
@@ -221,7 +216,6 @@ def main():
                     center_error = None
                     pixel_yaw, pixel_pitch = 0.0, 0.0
 
-                # GPIO和电机控制
                 if use_pnp or camera_center_offset is not None:
                     if not hasattr(main, 'gpio_state'):
                         main.gpio_state = False
@@ -240,7 +234,6 @@ def main():
                     if use_pnp or tracker.if_find:
                         min_angle = 0.3
 
-                        # ===== Pitch =====
                         pitch_abs = abs(pitch)
                         if pitch_abs > min_angle:
                             if pitch_abs < 2.0:
@@ -257,7 +250,6 @@ def main():
                         else:
                             pitch_cmd = 0.0
 
-                        # ===== Yaw =====
                         yaw_abs = abs(yaw)
                         if yaw_abs > min_angle:
                             if yaw_abs < 2.0:
@@ -308,11 +300,10 @@ def main():
                     tracker.lost = 0
                     tracker.kf_position = None
 
-                # ===== 终端显示 =====
                 if frame_count % 5 == 0:
-                    # 注释掉控制字符，改用普通print
-                    # sys.stdout.write(f"\033[2A")  # ← 先固定上移2行
-                    # sys.stdout.write("\033[J")     # ← 清除下面所有内容
+                    if HAS_GUI:
+                        sys.stdout.write(f"\033[2A")
+                    sys.stdout.write("\033[J")
 
                     if use_pnp or camera_center_offset is not None:
                         if use_pnp:
@@ -342,25 +333,32 @@ def main():
 
                     sys.stdout.flush()
 
-                # ===== 图像显示（注释掉） =====
-                # cv2.putText(result, f"FPS: {fps_last}", (10, 60),
-                #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                # 
-                # if use_pnp:
-                #     cv2.putText(result, "PNP", (10, 80),
-                #                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                #     if distance is not None:
-                #         cv2.putText(result, f"Dist:{distance:.2f}m", (10, 100),
-                #                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                # 
-                # cv2.imshow('Detection', result)
+                # ===== 图像显示（仅GUI模式） =====
+                if HAS_GUI:
+                    # 检查窗口是否还存在（被关闭则退出）
+                    try:
+                        if cv2.getWindowProperty('Detection', cv2.WND_PROP_VISIBLE) < 1:
+                            print("窗口已关闭，退出程序")
+                            break
+                    except:
+                        pass
 
-                # 按键检测（注释掉窗口按键，改用简单的延时）
-                # key = cv2.waitKey(10) & 0xFF
-                # if key == ord('q'):
-                #     print("\n退出程序")
-                #     break
-                time.sleep(0.01)  # 替代waitKey的延时
+                    cv2.putText(result, f"FPS: {fps_last}", (10, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                    if use_pnp:
+                        cv2.putText(result, "PNP", (10, 80),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                        if distance is not None:
+                            cv2.putText(result, f"Dist:{distance:.2f}m", (10, 100),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+                    cv2.imshow('Detection', result)
+
+                    key = cv2.waitKey(10) & 0xFF
+                    if key == ord('q'):
+                        print("收到 'q' 键，退出程序")
+                        break
 
                 # 定期释放内存
                 if frame_count % 100 == 0:
@@ -377,7 +375,7 @@ def main():
                 time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n程序被中断")
+        print("程序被中断")
 
     # ===== 保存滑条值 =====
     try:
@@ -409,9 +407,9 @@ def main():
             gpio.release()
         except:
             pass
-        # 注释掉窗口销毁
-        # cv2.destroyAllWindows()
-        # cv2.waitKey(1)
+        if HAS_GUI:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
         print("资源已释放")
 
 

@@ -354,6 +354,7 @@ def main():
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
                 
                 cv2.imshow('Detection', result)
+                cv2.imshow('binary', binary)
 
                 #按键检测（注释掉窗口按键，改用简单的延时）
                 key = cv2.waitKey(10) & 0xFF
