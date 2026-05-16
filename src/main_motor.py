@@ -19,8 +19,8 @@ def main():
         return
 
     detector = Detector(
-        rectangle_max_area=1300000,
-        rectangle_min_area=1000,
+        rectangle_max_area=50000,
+        rectangle_min_area=3000,
         use_pnp=True
     )
 
@@ -105,15 +105,15 @@ def main():
     frame_count = 0
 
     # ===== PD控制变量 =====
-    Kp_pitch = 0.05
+    Kp_pitch = 0.1
     Kd_pitch = 0.1
-    Kp_yaw = 0.1
+    Kp_yaw = 0.3
     Kd_yaw = 0.1
     last_pitch_err = 0.0
     last_yaw_err = 0.0
 
-    val_pitch = 2
-    val_yaw = 6
+    val_pitch = 50
+    val_yaw = 120
 
     # ===== 读取上次保存的滑条值 =====
     OFFSET_FILE = "slider_offset.txt"
@@ -352,9 +352,10 @@ def main():
                     if distance is not None:
                         cv2.putText(result, f"Dist:{distance:.2f}m", (10, 100),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-                
-                cv2.imshow('Detection', result)
+                        
                 cv2.imshow('binary', binary)
+                cv2.imshow('Detection', result)
+                
 
                 #按键检测（注释掉窗口按键，改用简单的延时）
                 key = cv2.waitKey(10) & 0xFF

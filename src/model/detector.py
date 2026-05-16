@@ -28,7 +28,7 @@ class Detector:
     def process(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         #_, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 13, 2)
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2)
         return binary
 
     def order_points(self, pts):
@@ -69,20 +69,27 @@ class Detector:
             if len(np.unique(rect, axis=0)) < 4:
                 continue
             
-            w1 = np.linalg.norm(rect[0] - rect[1])
-            w2 = np.linalg.norm(rect[3] - rect[2])
-            h1 = np.linalg.norm(rect[0] - rect[3])
-            h2 = np.linalg.norm(rect[1] - rect[2])
+            w1 = np.linalg.norm(rect[0] - rect[1])  # 上边
+            w2 = np.linalg.norm(rect[3] - rect[2])  # 下边
+            h1 = np.linalg.norm(rect[0] - rect[3])  # 左边
+            h2 = np.linalg.norm(rect[1] - rect[2])  # 右边
             
-            w = (w1 + w2) / 2
-            h = (h1 + h2) / 2
+            w = (w1 + w2) / 2  # 宽度（水平方向）
+            h = (h1 + h2) / 2  # 高度（垂直方向）
             
             if w == 0 or h == 0:
                 continue
-                
-            ratio = max(w, h) / min(w, h)
             
-            if not (1.1 <= ratio <= 1.8):
+            # ==== 关键修改：检查朝向 ====
+            # 板子应该是横向的，宽度 > 高度
+            if w < h:  # 如果高度大于宽度，说明板子竖起来了
+                continue
+                
+            # 宽高比检查（宽度/高度）
+            aspect_ratio = w / h
+            
+            # 假设横板宽高比在1.5-3.0之间
+            if not (1.1 <= aspect_ratio <= 1.6):
                 continue
             
             board = Board()
@@ -94,7 +101,7 @@ class Detector:
         return boards
 
     def select_board(self, boards):
-        return max(boards, key=lambda b: b.area) if boards else None
+        return min(boards, key=lambda b: b.area) if boards else None
 
     def tf_point(self, board, frame):    
         h, w = frame.shape[:2]
