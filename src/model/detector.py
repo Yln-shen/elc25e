@@ -89,7 +89,7 @@ class Detector:
             aspect_ratio = w / h
             
             # 假设横板宽高比在1.5-3.0之间
-            if not (1.1 <= aspect_ratio <= 1.6):
+            if not (1.0 <= aspect_ratio <= 1.7):
                 continue
             
             board = Board()
@@ -101,7 +101,7 @@ class Detector:
         return boards
 
     def select_board(self, boards):
-        return min(boards, key=lambda b: b.area) if boards else None
+        return max(boards, key=lambda b: b.area) if boards else None
 
     def tf_point(self, board, frame):    
         h, w = frame.shape[:2]

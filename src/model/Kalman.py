@@ -4,34 +4,36 @@ import cv2
 class KalmanFilter:
     def __init__(self, R=0.1, Q=0.01):
         self.dt = 1/30  # 默认30fps的时间步长
-        self.kf = cv2.KalmanFilter(2, 1)  # 状态维度=2(位置+速度), 观测维度=1(位置)
+        self.kf = cv2.KalmanFilter(3, 1)  # 状态维度=3(位置+速度+加速度), 观测维度=1(位置)
         
         # ===== 状态转移矩阵 A =====
-        # [1, dt]  表示: 新位置 = 旧位置 + 速度*dt
-        # [0, 1 ]  表示: 速度不变(匀速模型)
-        self.kf.transitionMatrix = np.array([[1, self.dt],
-                                             [0, 1]], np.float32)
+        # [1, dt, dt²/2]  表示: 新位置 = 旧位置 + 速度*dt + 0.5*加速度*dt²
+        # [0, 1,  dt    ]  表示: 新速度 = 旧速度 + 加速度*dt
+        # [0, 0,  1     ]  表示: 加速度不变(匀加速模型)
+        self.kf.transitionMatrix = np.array([[1, self.dt, 0.5 * self.dt**2],
+                                             [0, 1,      self.dt],
+                                             [0, 0,      1]], np.float32)
         
         # ===== 观测矩阵 H =====
-        # [1, 0] 表示: 我们只能观测到位置，观测不到速度
-        self.kf.measurementMatrix = np.array([[1, 0]], np.float32)
+        # [1, 0, 0] 表示: 我们只能观测到位置，观测不到速度和加速度
+        self.kf.measurementMatrix = np.array([[1, 0, 0]], np.float32)
         
         # ===== 过程噪声协方差 Q =====
         # Q越大 → 越不相信模型预测 → 越相信观测值 → 响应快但噪声大
-        self.kf.processNoiseCov = np.eye(2, dtype=np.float32) * Q
+        self.kf.processNoiseCov = np.eye(3, dtype=np.float32) * Q
         
         # ===== 观测噪声协方差 R =====
         # R越大 → 越不相信观测值 → 越平滑但响应慢
         self.kf.measurementNoiseCov = np.array([[R]], np.float32)
 
-        # ===== 初始状态 x = [位置, 速度] = [0, 0] =====
-        # 【问题】初始状态是(0,0)，离真实值很远
-        self.kf.statePost = np.zeros((2, 1), np.float32)
+        # ===== 初始状态 x = [位置, 速度, 加速度] = [0, 0, 0] =====
+        # 【问题】初始状态是(0,0,0)，离真实值很远
+        self.kf.statePost = np.zeros((3, 1), np.float32)
         
         # ===== 初始协方差矩阵 P =====
         # 【问题】1000表示"非常不确定初始状态"
-        # 导致KF需要很多帧才能从(0,0)收敛到真实值
-        self.kf.errorCovPost = np.eye(2, dtype=np.float32) * 1000
+        # 导致KF需要很多帧才能从(0,0,0)收敛到真实值
+        self.kf.errorCovPost = np.eye(3, dtype=np.float32) * 1000
         
         # ===== 【新增】初始化标志 =====
         self.is_initialized = False
@@ -46,9 +48,10 @@ class KalmanFilter:
         
         原理:
             statePost = [[value],    ← 位置直接设为检测值
-                         [0]]        ← 速度设为0（未知，先猜0）
+                         [0],        ← 速度设为0（未知，先猜0）
+                         [0]]        ← 加速度设为0（未知，先猜0）
         """
-        self.kf.statePost = np.array([[value], [0]], np.float32)
+        self.kf.statePost = np.array([[value], [0], [0]], np.float32)
         self.is_initialized = True  # 标记已初始化
 
     def predict(self):
@@ -62,14 +65,25 @@ class KalmanFilter:
 
     def reset(self):
         """重置KF状态"""
-        self.kf.statePost = np.zeros((2, 1), np.float32)
-        self.kf.errorCovPost = np.eye(2, dtype=np.float32) * 100
+        self.kf.statePost = np.zeros((3, 1), np.float32)
+        self.kf.errorCovPost = np.eye(3, dtype=np.float32) * 100
         self.is_initialized = False  # 【新增】重置初始化标志
 
     def get_state(self):
         """获取当前状态（位置值）"""
         return self.kf.statePost[0, 0]
     
+    # ===== 【新增】获取完整状态方法 =====
+    def get_full_state(self):
+        """获取完整状态 [位置, 速度, 加速度]"""
+        return (self.kf.statePost[0, 0],  # 位置
+                self.kf.statePost[1, 0],  # 速度
+                self.kf.statePost[2, 0])  # 加速度
+    
+    # ===== 【新增】获取预测状态方法 =====
+    def get_predicted_state(self):
+        """获取预测状态（不更新）"""
+        return self.kf.statePre[0, 0]
 # 示例用法
 if __name__ == "__main__":
     dt = 0.1  # 时间步长（秒）

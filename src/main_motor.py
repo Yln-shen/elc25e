@@ -21,7 +21,7 @@ def main():
     detector = Detector(
         rectangle_max_area=50000,
         rectangle_min_area=3000,
-        use_pnp=True
+        use_pnp= True
     )
 
     tracker = Tracker(
@@ -40,7 +40,7 @@ def main():
     # ===========================================
     # 串口和电机初始化
     # ===========================================
-    SERIAL_PORT_PITCH = '/dev/ttyACM0'
+    SERIAL_PORT_PITCH = '/dev/ttyS2'
     SERIAL_PORT_YAW   = '/dev/ttyS4'
     BAUDRATE = 115200
     MOTOR_ID_PITCH = 1
@@ -105,15 +105,17 @@ def main():
     frame_count = 0
 
     # ===== PD控制变量 =====
-    Kp_pitch = 0.1
+    Kp_pitch = 0.19
     Kd_pitch = 0.1
     Kp_yaw = 0.3
     Kd_yaw = 0.1
     last_pitch_err = 0.0
     last_yaw_err = 0.0
 
-    val_pitch = 50
-    val_yaw = 120
+    val_pitch =330
+    val_yaw = 500
+
+    smooth_yaw_cmd = 0.0
 
     # ===== 读取上次保存的滑条值 =====
     OFFSET_FILE = "slider_offset.txt"
@@ -265,10 +267,12 @@ def main():
                             else:
                                 yaw_cmd = Kp_yaw * yaw + Kd_yaw * (yaw - last_yaw_err)
                                 yaw_cmd = max(-5.0, min(5.0, yaw_cmd))
+                                smooth_yaw_cmd = 0.8 * smooth_yaw_cmd + 0.2 * yaw_cmd
+
                             last_yaw_err = yaw
                             try:
                                 motor_yaw.emm_v5_move_to_angle(
-                                    angle_deg=yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
+                                    angle_deg=smooth_yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
                             except Exception as e:
                                 print(f"Yaw电机命令失败: {e}")
                         else:
