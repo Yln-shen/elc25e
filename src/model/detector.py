@@ -27,8 +27,8 @@ class Detector:
 
     def process(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        #_, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        #binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2)
         return binary
 
     def order_points(self, pts):
@@ -101,7 +101,7 @@ class Detector:
         return boards
 
     def select_board(self, boards):
-        return max(boards, key=lambda b: b.area) if boards else None
+        return min(boards, key=lambda b: b.area) if boards else None
 
     def tf_point(self, board, frame):    
         h, w = frame.shape[:2]

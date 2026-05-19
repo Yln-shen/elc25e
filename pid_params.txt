@@ -1,0 +1,8 @@
+Kp_yaw=1.50
+Kd_yaw=0.30
+Kp_pitch=0.80
+Kd_pitch=0.20
+max_vel_yaw=80
+max_vel_pitch=40
+min_vel=5
+smooth=0.30

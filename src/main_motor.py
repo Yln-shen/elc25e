@@ -115,8 +115,6 @@ def main():
     val_pitch =330
     val_yaw = 500
 
-    smooth_yaw_cmd = 0.0
-
     # ===== 读取上次保存的滑条值 =====
     OFFSET_FILE = "slider_offset.txt"
     if os.path.exists(OFFSET_FILE):
@@ -228,7 +226,7 @@ def main():
                     if not hasattr(main, 'gpio_state'):
                         main.gpio_state = False
 
-                    target_near = (abs(yaw) < 0.5 and abs(pitch) < 0.5)
+                    target_near = (abs(yaw) < 10 and abs(pitch) < 10)
                     if target_near != main.gpio_state:
                         try:
                             if target_near:
@@ -266,13 +264,12 @@ def main():
                                 yaw_cmd = 0.3 if yaw > 0 else -0.3
                             else:
                                 yaw_cmd = Kp_yaw * yaw + Kd_yaw * (yaw - last_yaw_err)
-                                yaw_cmd = max(-5.0, min(5.0, yaw_cmd))
-                                smooth_yaw_cmd = 0.8 * smooth_yaw_cmd + 0.2 * yaw_cmd
+                                yaw_cmd = max(-5.0, min(5.0, yaw_cmd))                          
 
                             last_yaw_err = yaw
                             try:
                                 motor_yaw.emm_v5_move_to_angle(
-                                    angle_deg=smooth_yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
+                                    angle_deg=yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
                             except Exception as e:
                                 print(f"Yaw电机命令失败: {e}")
                         else:
