@@ -46,11 +46,22 @@ class Detector:
 
     def find_boards(self, binary):
         boards = []
-        contours_result = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        rectangle_contours = contours_result[0] if len(contours_result) == 2 else contours_result[1]
+        board_contours, hierarchy = cv2.findContours(binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
         
-        for contour in rectangle_contours:
-            area = cv2.contourArea(contour)
+        # 首先尝试寻找内轮廓
+        inner_contours = []
+        for i, contour in enumerate(board_contours):
+            if hierarchy[0][i][3] != -1:  # 有父轮廓的轮廓（内轮廓）
+                inner_contours.append((i, contour))
+        
+        # 如果没有内轮廓，则使用外轮廓（无父轮廓的轮廓）
+        target_contours = inner_contours if inner_contours else [
+            (i, c) for i, c in enumerate(board_contours) if hierarchy[0][i][3] == -1
+        ]
+        
+        # ===== 注意：这里要有 for 循环，缩进要对！=====
+        for i, contour in target_contours:
+            area = cv2.contourArea(contour)  # ← 这行之前漏了！
             if area < self.rectangle_min_area or area > self.rectangle_max_area:
                 continue
             
@@ -66,7 +77,7 @@ class Detector:
             points = approx.reshape(4, 2).astype(np.float32)
             rect = self.order_points(points)
             
-            if len(np.unique(rect, axis=0)) < 4:
+            if len(np.unique(rect, axis=0)) != 4:
                 continue
             
             w1 = np.linalg.norm(rect[0] - rect[1])  # 上边
@@ -80,15 +91,12 @@ class Detector:
             if w == 0 or h == 0:
                 continue
             
-            # ==== 关键修改：检查朝向 ====
             # 板子应该是横向的，宽度 > 高度
-            if w < h:  # 如果高度大于宽度，说明板子竖起来了
+            if w < h:
                 continue
                 
-            # 宽高比检查（宽度/高度）
+            # 宽高比检查
             aspect_ratio = w / h
-            
-            # 假设横板宽高比在1.5-3.0之间
             if not (1.0 <= aspect_ratio <= 1.7):
                 continue
             
@@ -99,10 +107,20 @@ class Detector:
             boards.append(board)
         
         return boards
-
     def select_board(self, boards):
-        return min(boards, key=lambda b: b.area) if boards else None
-
+        """选择中心离画面中心最近的板子"""
+        if not boards:
+            return None
+        
+        if self.frame_center is None:
+            # 如果画面中心还没设置，回退到选择面积最小的
+            return min(boards, key=lambda b: b.area)
+        
+        # 计算每个板子中心到画面中心的距离，选最近的
+        return min(boards, key=lambda b: 
+            (b.center[0] - self.frame_center[0])**2 + (b.center[1] - self.frame_center[1])**2
+        )
+    
     def tf_point(self, board, frame):    
         h, w = frame.shape[:2]
         self.frame_center = (w // 2, h // 2)
