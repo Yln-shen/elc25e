@@ -1,4 +1,4 @@
-# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存）- 无桌面版本
+# main_motor.py - 完整优化版（防重启 + 滑条初始化修正 + 滑条值保存 + 串级PID）- 无桌面版本
 
 import cv2
 import numpy as np
@@ -104,7 +104,7 @@ def main():
     last_print_lines = 1
     frame_count = 0
 
-    # ===== PD控制变量 =====
+    # ===== 原PD控制变量（回退用）=====
     Kp_pitch = 0.19
     Kd_pitch = 0.1
     Kp_yaw = 0.3
@@ -114,6 +114,37 @@ def main():
 
     val_pitch =330
     val_yaw = 500
+
+    # =============================================
+    # 串级PID控制模式开关
+    # True  = 位置外环→速度指令 → vel_control (平滑连续)
+    # False = 位置增量PD → move_to_angle (原逻辑)
+    # =============================================
+    USE_CASCADE_PID = True
+
+    if USE_CASCADE_PID:
+        # --- 位置外环参数 (角度° → 目标速度 RPM) ---
+        Kp_pos_yaw   = 60.0
+        Kd_pos_yaw   = 15.0
+        Kp_pos_pitch = 40.0
+        Kd_pos_pitch = 8.0
+
+        # --- 速度限幅 ---
+        MAX_SPEED_YAW   = 300
+        MAX_SPEED_PITCH = 150
+        MIN_SPEED       = 8
+
+        # --- 速度低通平滑 (替代内环PI，抑制抖动) ---
+        SPEED_SMOOTH = 0.6
+
+        pid_pos_yaw   = PID(kp=Kp_pos_yaw,   ki=0, kd=Kd_pos_yaw,
+                            output_min=-MAX_SPEED_YAW, output_max=MAX_SPEED_YAW)
+        pid_pos_pitch = PID(kp=Kp_pos_pitch, ki=0, kd=Kd_pos_pitch,
+                            output_min=-MAX_SPEED_PITCH, output_max=MAX_SPEED_PITCH)
+
+        last_speed_cmd_yaw   = 0.0
+        last_speed_cmd_pitch = 0.0
+        last_cascade_time    = time.time()
 
     # ===== 读取上次保存的滑条值 =====
     OFFSET_FILE = "slider_offset.txt"
@@ -151,6 +182,7 @@ def main():
 
     print(f"滑条初始: YAW={YAW_OFFSET_INIT:.2f}° (滑条:{yaw_slider_init}), PITCH={PITCH_OFFSET_INIT:.2f}° (滑条:{pitch_slider_init})")
     print(f"滑条范围: ±{OFFSET_RANGE}°")
+    print(f"PID模式: {'串级速度控制' if USE_CASCADE_PID else '位置增量PD'}")
     print("按 'q' 退出")
 
     error_count = 0
@@ -198,9 +230,6 @@ def main():
                 # 优先使用PNP
                 use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
 
-                # 优先使用PNP
-                use_pnp = (detector.pnp.yaw is not None and detector.pnp.pitch is not None)
-
                 if use_pnp:
                     yaw = detector.pnp.yaw - YAW_OFFSET
                     pitch = detector.pnp.pitch - PITCH_OFFSET
@@ -240,47 +269,115 @@ def main():
                     if use_pnp or tracker.if_find:
                         min_angle = 0.3
 
-                        # ===== Pitch =====
-                        pitch_abs = abs(pitch)
-                        if pitch_abs > min_angle:
-                            if pitch_abs < 2.0:
-                                pitch_cmd = 0.3 if pitch > 0 else -0.3
+                        # ================================================
+                        # 串级PID速度控制 (USE_CASCADE_PID = True)
+                        # ================================================
+                        if USE_CASCADE_PID:
+                            dt = time.time() - last_cascade_time
+                            if dt <= 0:
+                                dt = 0.01
+                            last_cascade_time = time.time()
+
+                            # 外环：角度误差 → 目标速度 (RPM)
+                            target_speed_yaw   = pid_pos_yaw.compute(yaw, dt)
+                            target_speed_pitch = pid_pos_pitch.compute(pitch, dt)
+
+                            # 速度低通平滑 (替代内环PI)
+                            speed_cmd_yaw   = SPEED_SMOOTH * target_speed_yaw   + (1 - SPEED_SMOOTH) * last_speed_cmd_yaw
+                            speed_cmd_pitch = SPEED_SMOOTH * target_speed_pitch + (1 - SPEED_SMOOTH) * last_speed_cmd_pitch
+                            last_speed_cmd_yaw   = speed_cmd_yaw
+                            last_speed_cmd_pitch = speed_cmd_pitch
+
+                            # ===== Pitch =====
+                            pitch_abs = abs(pitch)
+                            if pitch_abs > min_angle:
+                                dir_pitch = 1 if speed_cmd_pitch < 0 else 0
+                                vel_pitch = max(MIN_SPEED, min(abs(speed_cmd_pitch), MAX_SPEED_PITCH))
+                                try:
+                                    motor_pitch.emm_v5_vel_control(
+                                        dir=dir_pitch, vel=int(vel_pitch), acc=50)
+                                except Exception as e:
+                                    print(f"Pitch速度控制失败: {e}")
+                                pitch_cmd = speed_cmd_pitch
                             else:
-                                pitch_cmd = Kp_pitch * pitch + Kd_pitch * (pitch - last_pitch_err)
-                                pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
-                            last_pitch_err = pitch
-                            try:
-                                motor_pitch.emm_v5_move_to_angle(
-                                    angle_deg=pitch_cmd, vel_rpm=val_pitch, acc=0, abs_mode=False)
-                            except Exception as e:
-                                print(f"Pitch电机命令失败: {e}")
-                        else:
-                            pitch_cmd = 0.0
+                                pitch_cmd = 0.0
+                                try:
+                                    motor_pitch.emm_v5_stop_now()
+                                except:
+                                    pass
 
-                        # ===== Yaw =====
-                        yaw_abs = abs(yaw)
-                        if yaw_abs > min_angle:
-                            if yaw_abs < 2.0:
-                                yaw_cmd = 0.3 if yaw > 0 else -0.3
+                            # ===== Yaw =====
+                            yaw_abs = abs(yaw)
+                            if yaw_abs > min_angle:
+                                dir_yaw = 1 if speed_cmd_yaw < 0 else 0
+                                vel_yaw = max(MIN_SPEED, min(abs(speed_cmd_yaw), MAX_SPEED_YAW))
+                                try:
+                                    motor_yaw.emm_v5_vel_control(
+                                        dir=dir_yaw, vel=int(vel_yaw), acc=50)
+                                except Exception as e:
+                                    print(f"Yaw速度控制失败: {e}")
+                                yaw_cmd = speed_cmd_yaw
                             else:
-                                yaw_cmd = Kp_yaw * yaw + Kd_yaw * (yaw - last_yaw_err)
-                                yaw_cmd = max(-5.0, min(5.0, yaw_cmd))                          
+                                yaw_cmd = 0.0
+                                try:
+                                    motor_yaw.emm_v5_stop_now()
+                                except:
+                                    pass
 
-                            last_yaw_err = yaw
-                            try:
-                                motor_yaw.emm_v5_move_to_angle(
-                                    angle_deg=yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
-                            except Exception as e:
-                                print(f"Yaw电机命令失败: {e}")
+                            # 回读电机位置（调试用）
+                            if frame_count % 10 == 0:
+                                try:
+                                    motor_pitch.emm_v5_read_sys_params(s=SysParams.S_CPOS, timeout=0.1)
+                                except:
+                                    pass
+
+                        # ================================================
+                        # 原位置PD控制 (USE_CASCADE_PID = False, 回退)
+                        # ================================================
                         else:
-                            yaw_cmd = 0.0
+                            # ===== Pitch =====
+                            pitch_abs = abs(pitch)
+                            if pitch_abs > min_angle:
+                                if pitch_abs < 2.0:
+                                    pitch_cmd = 0.3 if pitch > 0 else -0.3
+                                else:
+                                    pitch_cmd = Kp_pitch * pitch + Kd_pitch * (pitch - last_pitch_err)
+                                    pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
+                                last_pitch_err = pitch
+                                try:
+                                    motor_pitch.emm_v5_move_to_angle(
+                                        angle_deg=pitch_cmd, vel_rpm=val_pitch, acc=0, abs_mode=False)
+                                except Exception as e:
+                                    print(f"Pitch电机命令失败: {e}")
+                            else:
+                                pitch_cmd = 0.0
 
-                        if frame_count % 10 == 0:
-                            try:
-                                ver_data = motor_pitch.emm_v5_read_sys_params(s=SysParams.S_CPOS, timeout=0.1)
-                            except:
-                                pass
+                            # ===== Yaw =====
+                            yaw_abs = abs(yaw)
+                            if yaw_abs > min_angle:
+                                if yaw_abs < 2.0:
+                                    yaw_cmd = 0.3 if yaw > 0 else -0.3
+                                else:
+                                    yaw_cmd = Kp_yaw * yaw + Kd_yaw * (yaw - last_yaw_err)
+                                    yaw_cmd = max(-5.0, min(5.0, yaw_cmd))
+
+                                last_yaw_err = yaw
+                                try:
+                                    motor_yaw.emm_v5_move_to_angle(
+                                        angle_deg=yaw_cmd, vel_rpm=val_yaw, acc=0, abs_mode=False)
+                                except Exception as e:
+                                    print(f"Yaw电机命令失败: {e}")
+                            else:
+                                yaw_cmd = 0.0
+
+                            if frame_count % 10 == 0:
+                                try:
+                                    ver_data = motor_pitch.emm_v5_read_sys_params(s=SysParams.S_CPOS, timeout=0.1)
+                                except:
+                                    pass
+
                     else:
+                        # 无跟踪目标 → 停止
                         yaw_cmd, pitch_cmd = 0.0, 0.0
                         try:
                             motor_pitch.emm_v5_stop_now()
@@ -289,7 +386,16 @@ def main():
                             pass
                         last_pitch_err = 0.0
                         last_yaw_err = 0.0
+
+                        # 串级模式也重置状态
+                        if USE_CASCADE_PID:
+                            pid_pos_yaw.reset()
+                            pid_pos_pitch.reset()
+                            last_speed_cmd_yaw   = 0.0
+                            last_speed_cmd_pitch = 0.0
+
                 else:
+                    # 无PNP/无偏移 → 完全停止
                     yaw, pitch = 0.0, 0.0
                     yaw_cmd, pitch_cmd = 0.0, 0.0
                     distance = None
@@ -309,6 +415,12 @@ def main():
                     tracker.lost = 0
                     tracker.kf_position = None
 
+                    if USE_CASCADE_PID:
+                        pid_pos_yaw.reset()
+                        pid_pos_pitch.reset()
+                        last_speed_cmd_yaw   = 0.0
+                        last_speed_cmd_pitch = 0.0
+
                 # ===== 终端显示 =====
                 if frame_count % 5 == 0:
                     # 注释掉控制字符，改用普通print
@@ -319,7 +431,8 @@ def main():
                         if use_pnp:
                             cx = camera_center_offset[0] if camera_center_offset is not None else 0
                             cy = camera_center_offset[1] if camera_center_offset is not None else 0
-                            print(f"偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  "
+                            mode_tag = "[CASCADE]" if USE_CASCADE_PID else "[PD]"
+                            print(f"{mode_tag} 偏移:({cx:.0f},{cy:.0f})px 距离:{distance:.2f}m  "
                                   f"Y:{yaw:.1f}° P:{pitch:.1f}°  "
                                   f"滑条:Y={YAW_OFFSET:.1f}° P={PITCH_OFFSET:.1f}°  "
                                   f"FPS:{fps_last}")
@@ -328,8 +441,12 @@ def main():
                             if yaw_remain < 0.5 and pitch_remain < 0.5:
                                 print("✓ 已对准!")
                             else:
-                                print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
-                                      f"电机cmd: Y={yaw_cmd:.2f}° P={pitch_cmd:.2f}°")
+                                if USE_CASCADE_PID:
+                                    print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
+                                          f"速度cmd: Y={yaw_cmd:.0f}rpm P={pitch_cmd:.0f}rpm")
+                                else:
+                                    print(f"距目标: Y={yaw_remain:.1f}° P={pitch_remain:.1f}°  |  "
+                                          f"电机cmd: Y={yaw_cmd:.2f}° P={pitch_cmd:.2f}°")
                             last_print_lines = 2
                         else:
                             print(f"像素模式  Y:{yaw:.1f}° P:{pitch:.1f}°  FPS:{fps_last}")
