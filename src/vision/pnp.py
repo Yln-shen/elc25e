@@ -5,7 +5,7 @@ import numpy as np
 class PNPSolver:
     """PNP位姿解算器"""
     
-    def __init__(self, target_width=0.260, target_height=0.173):
+    def __init__(self, target_width=0.262, target_height=0.174):
         self.target_width = target_width
         self.target_height = target_height
         
@@ -23,15 +23,15 @@ class PNPSolver:
         # 靶子中心3D点（原点）
         self.center_3d = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
         
-        # 相机内参（使用标定值）
+        # pnp.py 中更新为：
         self.camera_matrix = np.array([
-            [499.356, 0.0,    334.895],
-            [0.0,    496.552, 231.149],
+            [581.516, 0.0,    385.208],
+            [0.0,    582.147, 181.477],
             [0.0,    0.0,     1.0    ]
         ], dtype=np.float32)
-        
+
         self.dist_coeffs = np.array([
-            [0.233, -0.445, -0.022, 0.0, 0.347]
+            [0.263, -0.361, -0.023, 0.052, 0.395]
         ], dtype=np.float32)
         
         self.position = None

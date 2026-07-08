@@ -10,7 +10,7 @@
 
 ## 快速开始
 
-### 1. 安装 uv
+### 1. 安装 uvp
 ```bash
 pipx install uv
 uv venv

@@ -3,10 +3,10 @@ import cv2
 import os
 import time
 
-SAVE_DIR = "/home/yln/elc25e/target_images"
+SAVE_DIR = "/home/yln/elc25e/data/images/target"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-cam = cv2.VideoCapture(0)
+cam = cv2.VideoCapture(4)
 if not cam.isOpened():
     print("无法打开摄像头")
     exit()

@@ -2,7 +2,9 @@
 import cv2
 import numpy as np
 import math
-from .pnp import PNPSolver
+import time
+from src.vision.pnp import PNPSolver
+from src.vision.camera import Camera
 
 RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180
@@ -226,3 +228,43 @@ class Detector:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         return result
+    
+if __name__ == "__main__":
+    # 测试代码
+    try:
+        cam = Camera(index=3, width=640, height=480, fps=120)
+    except Exception as e:
+        print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
+        cam = Camera(index=1)
+
+    detector = Detector(rectangle_min_area=100, rectangle_max_area=500000, use_pnp=True)
+    
+    fps = 0
+    fps_last = 0
+    fps_timer = time.time()
+
+    while True:
+        ret, frame = cam.read()
+        if not ret:
+            print("无法获取图像")
+            break
+
+        fps += 1
+        if time.time() - fps_timer >= 1.0:
+            fps_last = fps
+            fps = 0
+            fps_timer = time.time()
+        print(f"FPS: {fps_last}")
+        
+        binary, board = detector.detect(frame)
+        result = detector.draw_boards(frame)
+        
+        cv2.imshow("Result", result)
+        cv2.imshow("Binary", binary)
+        
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+    
+    cam.cam.release()
+    cv2.destroyAllWindows()

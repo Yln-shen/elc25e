@@ -1,4 +1,4 @@
-# calibrate_with_target.py - 用A4靶子标定相机（完整修正版）
+# calibrate_with_target.py - 用A4靶子标定相机（完整交互版）
 
 import cv2
 import numpy as np
@@ -7,9 +7,9 @@ import os
 from datetime import datetime
 
 # ========== 配置 ==========
-TARGET_WIDTH = 0.260   # A4宽（米）
-TARGET_HEIGHT = 0.173  # A4高（米）
-IMAGE_DIR = "/home/yln/elc25e/target_images/"  # 靶子照片目录
+TARGET_WIDTH = 0.263   # A4宽（米）
+TARGET_HEIGHT = 0.174  # A4高（米）
+IMAGE_DIR = "/home/yln/elc25e/data/images/target"  # 靶子照片目录
 
 # ========== 靶子3D点（匹配新的排序：左上->右上->右下->左下）==========
 half_w = TARGET_WIDTH / 2
@@ -125,9 +125,46 @@ def preprocess_image(img):
     return enhanced_bgr
 
 
+# ========== 检查并删除图片 ==========
+def delete_images(file_list, ask_confirmation=True):
+    """删除指定的图片文件"""
+    if not file_list:
+        return 0
+    
+    print("\n" + "=" * 60)
+    print("准备删除以下图片：")
+    print("=" * 60)
+    for fname in file_list:
+        print(f"  - {os.path.basename(fname)}")
+    
+    if ask_confirmation:
+        response = input("\n确认删除这些图片吗？(y/N): ").strip().lower()
+        if response != 'y':
+            print("取消删除")
+            return 0
+    
+    deleted_count = 0
+    for fname in file_list:
+        try:
+            os.remove(fname)
+            print(f"  ✓ 已删除: {os.path.basename(fname)}")
+            deleted_count += 1
+        except Exception as e:
+            print(f"  ✗ 删除失败 {os.path.basename(fname)}: {e}")
+    
+    print(f"\n成功删除 {deleted_count}/{len(file_list)} 张图片")
+    return deleted_count
+
+
 # ========== 主程序 ==========
 print("=" * 60)
-print("         相机标定程序 - A4靶子标定")
+print("         相机标定程序 - A4靶子标定（交互版）")
+print("=" * 60)
+print("\n操作说明：")
+print("  [SPACE]  - 暂停/继续")
+print("  [d]      - 标记删除当前图片")
+print("  [s]      - 保留当前图片（跳转下一张）")
+print("  [ESC]    - 退出程序")
 print("=" * 60)
 
 # ========== 收集数据 ==========
@@ -136,7 +173,7 @@ for ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
     images.extend(glob.glob(os.path.join(IMAGE_DIR, ext)))
 
 if len(images) == 0:
-    print(f"错误：目录 {IMAGE_DIR} 中没有找到图片")
+    print(f"\n错误：目录 {IMAGE_DIR} 中没有找到图片")
     print("请先拍20-30张靶子在不同位置、不同角度的照片，保存到该目录")
     exit()
 
@@ -147,6 +184,7 @@ all_obj_points = []   # 每张图对应的3D点
 all_img_points = []   # 每张图对应的2D点
 good_images = 0
 detection_failed = []
+to_delete = []  # 标记要删除的图片
 
 # 创建调试目录
 debug_dir = os.path.join(IMAGE_DIR, "debug")
@@ -158,12 +196,15 @@ for idx, fname in enumerate(images):
         print(f"无法读取: {os.path.basename(fname)}")
         continue
     
+    basename = os.path.basename(fname)
+    print(f"\n处理 [{idx+1}/{len(images)}]: {basename}")
+    
     # 尝试原始图像
     corners = find_target_corners(img)
     
     # 如果失败，尝试预处理后的图像
     if corners is None:
-        print(f"原始图像未检测到，尝试预处理: {os.path.basename(fname)}")
+        print(f"  ⚠️  原始图像未检测到，尝试预处理...")
         enhanced_img = preprocess_image(img)
         corners = find_target_corners(enhanced_img)
         
@@ -202,8 +243,16 @@ for idx, fname in enumerate(images):
                     tuple(corners[(i+1)%4].astype(int)), 
                     (0, 255, 255), 2)
         
-        # 显示图像信息
-        cv2.putText(display, f"Good: {good_images}/{idx+1}", (10, 30),
+        # 显示状态信息
+        cv2.putText(display, f"File: {basename}", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(display, f"Progress: {idx+1}/{len(images)}  Good: {good_images}", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(display, "SPACE=pause  d=delete  s=skip  ESC=quit", (10, display.shape[0]-20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # 显示检测状态
+        cv2.putText(display, "DETECTED", (display.shape[1]-150, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         # 缩放显示
@@ -212,21 +261,72 @@ for idx, fname in enumerate(images):
             display = cv2.resize(display, None, fx=scale, fy=scale)
         
         cv2.imshow('Target Detection', display)
-        key = cv2.waitKey(50)
         
-        # 按空格暂停/继续，按ESC退出
-        if key == 27:  # ESC
-            print("用户中断")
-            cv2.destroyAllWindows()
-            exit()
-        elif key == ord(' '):
-            print("暂停中，按任意键继续...")
-            cv2.waitKey(0)
+        # 交互处理
+        while True:
+            key = cv2.waitKey(0) & 0xFF
+            
+            if key == 27:  # ESC
+                print("\n用户中断")
+                cv2.destroyAllWindows()
+                exit()
+            elif key == ord(' '):  # 空格 - 暂停
+                print("  ⏸️  暂停中，按任意键继续...")
+                cv2.waitKey(0)
+            elif key == ord('d') or key == ord('D'):  # d - 标记删除
+                print(f"  🗑️  标记删除: {basename}")
+                to_delete.append(fname)
+                # 从列表中移除这个图片的数据
+                all_obj_points.pop()
+                all_img_points.pop()
+                good_images -= 1
+                break
+            elif key == ord('s') or key == ord('S'):  # s - 保留
+                print(f"  ✓ 保留: {basename}")
+                break
+            else:
+                # 其他按键继续
+                break
     else:
-        detection_failed.append(os.path.basename(fname))
-        print(f"✗ 在 {os.path.basename(fname)} 中未检测到靶子")
+        detection_failed.append(basename)
+        print(f"  ✗ 未检测到靶子")
+        
+        # 显示检测失败的图片，让用户决定是否删除
+        display = img.copy()
+        cv2.putText(display, f"NO TARGET DETECTED", (10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        cv2.putText(display, f"File: {basename}", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(display, "Press [d] to delete  [s] to skip", (10, display.shape[0]-20),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        scale = min(1200 / display.shape[1], 800 / display.shape[0])
+        if scale < 1:
+            display = cv2.resize(display, None, fx=scale, fy=scale)
+        
+        cv2.imshow('Detection Failed', display)
+        
+        while True:
+            key = cv2.waitKey(0) & 0xFF
+            if key == 27:  # ESC
+                print("\n用户中断")
+                cv2.destroyAllWindows()
+                exit()
+            elif key == ord('d') or key == ord('D'):
+                to_delete.append(fname)
+                print(f"  🗑️  标记删除（未检测到靶子）: {basename}")
+                break
+            elif key == ord('s') or key == ord('S'):
+                print(f"  ⏭️  跳过: {basename}")
+                break
+        
+        cv2.destroyWindow('Detection Failed')
 
 cv2.destroyAllWindows()
+
+# ========== 删除标记的图片 ==========
+if to_delete:
+    delete_images(to_delete, ask_confirmation=True)
 
 # ========== 报告检测结果 ==========
 print("\n" + "=" * 60)
@@ -237,6 +337,8 @@ if detection_failed:
     print("\n以下图片检测失败:")
     for fname in detection_failed:
         print(f"  - {fname}")
+    if not to_delete:
+        print("\n提示：可以重新运行程序并按 'd' 键删除这些图片")
     print(f"调试图像已保存到: {debug_dir}")
 
 if good_images < 10:
@@ -270,9 +372,9 @@ try:
         None,
         criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6)
     )
-    print("标定成功完成！")
+    print("✓ 标定成功完成！")
 except Exception as e:
-    print(f"标定失败: {e}")
+    print(f"✗ 标定失败: {e}")
     exit()
 
 # ========== 验证标定结果 ==========
@@ -459,7 +561,7 @@ print("✓ 文本格式结果已保存到: camera_calib_target.txt")
 
 # ========== 显示反投影验证 ==========
 try:
-    print("\n显示反投影验证（前5张图片）...")
+    print("\n显示反投影验证（按任意键切换图片，ESC退出）...")
     
     # 找出成功检测的图片索引
     good_indices = []
@@ -471,7 +573,7 @@ try:
         else:
             break
     
-    for i in range(min(5, good_images)):
+    for i in range(min(100, good_images)):  # 最多显示10张
         # 读取成功检测的图片
         img = cv2.imread(good_indices[i])
         if img is None:
@@ -501,9 +603,12 @@ try:
             cv2.line(img, pt_true_int, pt_proj_int, (255, 255, 255), 1)
         
         # 显示误差信息
+        basename = os.path.basename(good_indices[i])
         cv2.putText(img, f"Error: {individual_errors[i]:.3f} pix", (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(img, f"Image {i+1}/{good_images}", (10, 60),
+        cv2.putText(img, f"Image {i+1}/{min(10, good_images)}: {basename}", (10, 60),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(img, "Press any key for next, ESC to exit", (10, img.shape[0]-20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
         # 缩放显示
@@ -513,22 +618,16 @@ try:
         else:
             display = img
         
-        cv2.imshow(f'Reprojection Verification', display)
+        cv2.imshow('Reprojection Verification', display)
         
-        key = cv2.waitKey(1000)
+        key = cv2.waitKey(0)
         if key == 27:  # ESC
             break
-        elif key == ord(' '):
-            print("暂停中，按任意键继续...")
-            cv2.waitKey(0)
     
-    print("\n按任意键退出...")
-    cv2.waitKey(0)
+    cv2.destroyAllWindows()
     
 except Exception as e:
     print(f"反投影验证显示失败: {e}")
-
-cv2.destroyAllWindows()
 
 # ========== 总结 ==========
 print("\n" + "=" * 60)
