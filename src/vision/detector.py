@@ -16,7 +16,7 @@ class Board:
         self.camera_center = None
 
 class Detector:
-    def __init__(self, rectangle_min_area, rectangle_max_area, use_pnp=True):
+    def __init__(self, rectangle_min_area, rectangle_max_area, pnp_solver=None):
         self.rectangle_max_area = rectangle_max_area
         self.rectangle_min_area = rectangle_min_area
         self.relative_board = None
@@ -24,8 +24,7 @@ class Detector:
         self.frame_center = None
         self.board_center = None
         self.camera_center_offset = None
-        self.use_pnp = use_pnp
-        self.pnp = PNPSolver()
+        self.pnp = pnp_solver if pnp_solver else PNPSolver()
 
     def process(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -144,13 +143,14 @@ class Detector:
         self.tf_point(board, frame)
         self.relative_board = board
 
-        if self.use_pnp and board is not None and len(board.points) == 4:
+        if self.pnp and board is not None:
             self.pnp.solve(board.points)
         else:
+            # 清空 PNP 结果
             self.pnp.position = None
+            self.pnp.distance = None
             self.pnp.yaw = None
             self.pnp.pitch = None
-            self.pnp.distance = None
             self.pnp.center_projected = None
             self.pnp.center_error = None
 
@@ -237,7 +237,8 @@ if __name__ == "__main__":
         print(f"摄像头初始化失败: {e}，尝试默认摄像头...")
         cam = Camera(index=1)
 
-    detector = Detector(rectangle_min_area=100, rectangle_max_area=500000, use_pnp=True)
+    pnp = PNPSolver()
+    detector = Detector(rectangle_min_area=100, rectangle_max_area=500000, pnp_solver=pnp)
     
     fps = 0
     fps_last = 0
