@@ -38,6 +38,9 @@ class PNPSolver:
         self.distance = None
         self.yaw = None
         self.pitch = None
+
+        self.rvec = None      # 旋转向量
+        self.tvec = None      # 平移向量
         
         # ===== 【新增】中心点投影坐标 =====
         self.center_projected = None  # PNP计算出的中心在图像上的投影
@@ -77,6 +80,9 @@ class PNPSolver:
             self._debug_count += 1
             return False
         
+        self.rvec = rvec
+        self.tvec = tvec
+        
         # 计算位置和角度
         self.position = tvec.flatten()
         x, y, z = self.position
@@ -115,5 +121,9 @@ class PNPSolver:
         self.distance = None
         self.yaw = None
         self.pitch = None
+
+        self.rvec = None      # ← 添加
+        self.tvec = None      # ← 添加
+
         self.center_projected = None
         self.center_error = None

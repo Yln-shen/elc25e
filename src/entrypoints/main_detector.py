@@ -16,8 +16,8 @@ def main():
     
     pnp = PNPSolver()
     detector = Detector(
-        rectangle_min_area=100,
-        rectangle_max_area=500000,
+        rectangle_min_area=1000,
+        rectangle_max_area=50000,
         pnp_solver=pnp
     )
     
