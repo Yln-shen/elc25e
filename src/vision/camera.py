@@ -54,7 +54,7 @@ class Camera:
 if __name__ == '__main__':
     import time
 
-    cam = Camera(index=0, format='MJPG', width=640, height=480, fps=30)
+    cam = Camera(index=0, format='MJPG', width=640, height=480, fps=120)
     
     # # 创建可调窗口并设置大小
     # cv2.namedWindow('frame', cv2.WINDOW_NORMAL)
