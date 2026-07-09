@@ -1,4 +1,4 @@
-# src/entrypoints/main.py
+# src/entrypoints/main_detector.py
 import cv2
 import time
 from src.vision.camera import Camera

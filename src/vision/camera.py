@@ -2,18 +2,48 @@ import cv2
 
 class Camera:
     def __init__(self, index=0, format='MJPG', width=640, height=480, fps=30):
-        self.cam = self.find_cam(index)  # Corrected method name and added index parameter
+        self.cam = self.find_cam(index)
         self.cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*format))
-        self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, width)  # Fixed width and height order
+        self.cam.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cam.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cam.set(cv2.CAP_PROP_FPS, fps)
+        self.latest_frame = None
+        self.has_frame = False
 
     def read(self):
-        ret, frame = self.cam.read()
-        return ret, frame
+        """
+        非阻塞读取：立即返回最新帧
+        如果摄像头有缓存，返回最新的一帧
+        如果无新帧，返回上一次的帧
+        """
+        # 尝试 grab 最新帧（非阻塞）
+        grabbed = self.cam.grab()
+        
+        if grabbed:
+            # 有新帧，更新缓存
+            ret, frame = self.cam.retrieve()
+            if ret:
+                self.latest_frame = frame
+                self.has_frame = True
+                return True, frame
+        
+        # 没有新帧，返回上一次的帧
+        if self.has_frame:
+            return True, self.latest_frame
+        else:
+            # 还没有任何帧，尝试阻塞读取一次
+            ret, frame = self.cam.read()
+            if ret:
+                self.latest_frame = frame
+                self.has_frame = True
+            return ret, frame
 
-    def find_cam(self, index = 30):  # Added index parameter and proper exception handling
-        max_tries = index + 20  # Maximum number of cameras to try
+    def read_blocking(self):
+        """原始阻塞读取（保留，以备不时之需）"""
+        return self.cam.read()
+
+    def find_cam(self, index=30):
+        max_tries = index + 20
         for i in range(index, max_tries):
             cam = cv2.VideoCapture(i, cv2.CAP_V4L2)
             if cam.isOpened():
