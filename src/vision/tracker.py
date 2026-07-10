@@ -1,7 +1,10 @@
+# src/vision/tracker.py
 import math
 import time
 import cv2
-from .Kalman import KalmanFilter
+import numpy as np
+from collections import deque
+from .Kalman import AdaptiveEKF3D  # 新的 3D EKF
 
 RAD2DEG = 180 / math.pi
 DEG2RAD = math.pi / 180
@@ -10,14 +13,13 @@ DEG2RAD = math.pi / 180
 def time_diff(last_time=[None]):
     """计算两次调用之间的时间差（秒）"""
     current_time = time.time_ns()
-
     if last_time[0] is None:
         last_time[0] = current_time
-        return 1e-9  # 第一次返回1纳秒，避免除零
+        return 1e-9
     else:
         diff = current_time - last_time[0]
         last_time[0] = current_time
-        return diff / 1e9  # 纳秒转秒
+        return diff / 1e9
 
 
 class Tracker:
@@ -28,176 +30,233 @@ class Tracker:
         self.frame_add = frame_add
         
         # ===== 跟踪状态变量 =====
-        self.lost = 0          # 丢失帧计数
-        self.predict = False   # 是否处于预测状态
-        self.if_find = False   # 是否找到目标
+        self.lost = 0
+        self.predict = False
+        self.if_find = False
         
-        # ===== 卡尔曼滤波器（X和Y各一个） =====
-        self.kf_cx = KalmanFilter()  # X坐标滤波器
-        self.kf_cy = KalmanFilter()  # Y坐标滤波器
+        # ===== 3D 卡尔曼滤波器（位置 + 速度） =====
+        self.kf_3d = AdaptiveEKF3D(Q_base=0.5, R=1.0)
         
-        # ===== 【新增1】KF位置存储 =====
-        self.kf_position = None  # 存储滤波后的位置(x, y)
+        # ===== 存储滤波后的 3D 位置 =====
+        self.position_filtered = None  # (x, y, z) 滤波后
+        self.position_raw = None       # (x, y, z) 原始观测
+        
+        # ===== 轨迹存储（用于绘制） =====
+        self.trajectory = deque(maxlen=30)  # 最多保存 30 帧
+        
+        # ===== 预测状态 =====
+        self.predicted_position = None  # 丢失时的预测位置
+        
+        # ===== 角度平滑 =====
+        self.yaw_filtered = 0.0
+        self.pitch_filtered = 0.0
+        self.yaw_raw = 0.0
+        self.pitch_raw = 0.0
 
-    def update_dt(self, dt):
+    def track_3d(self, target_position_3d):
         """
-        更新KF的时间步长
+        3D 域跟踪：对 (x, y, z) 进行滤波
         
-        【重要】因为实际帧率可能变化，需要动态更新转移矩阵中的dt
-        转移矩阵: [[1, dt],
-                  [0, 1 ]]
-        dt在[0,1]位置，表示"速度对位置的贡献"
+        参数:
+            target_position_3d: 激光目标 3D 位置 (x, y, z)，来自 LaserCompensator
+        
+        返回:
+            (x, y, z): 滤波后的 3D 位置
         """
-        self.kf_cx.kf.transitionMatrix[0, 1] = dt
-        self.kf_cy.kf.transitionMatrix[0, 1] = dt
-        self.kf_cx.dt = dt
-        self.kf_cy.dt = dt
-
-    def kf_predict(self):
-        """执行KF预测"""
-        self.kf_cx.predict()
-        self.kf_cy.predict()
-
-    def get_kf_state(self):
-        """获取KF当前状态（位置值）"""
-        return (self.kf_cx.get_state(), self.kf_cy.get_state())
-
-    def reset_kf(self):
-        """重置KF"""
-        self.kf_cx.reset()
-        self.kf_cy.reset()
-        self.kf_position = None
-
-    def kf_update(self, center):
-        """用观测值更新KF"""
-        self.kf_cx.update(center[0])
-        self.kf_cy.update(center[1])
-
-    def pixel_to_yaw_pitch(self, laser_center):
-        """将像素坐标转换为偏航角和俯仰角"""
-        if laser_center is None:
-            return 0.0, 0.0
-            
-        vfov_rad = self.vfov * DEG2RAD
-        focal = (self.img_width / 2) / math.tan(vfov_rad / 2)
+        dt = time_diff()
         
-        if abs(focal) < 1e-6:
-            return 0.0, 0.0
+        # 保存原始观测值（用于绘制对比）
+        self.position_raw = target_position_3d
         
-        yaw = math.atan(laser_center[0] / focal) * RAD2DEG
-        pitch = math.atan(laser_center[1] / focal) * RAD2DEG
-        
-        return yaw, pitch
-
-    def track(self, laser_center):
-        """
-        跟踪目标，融合卡尔曼滤波
-        
-        三种情况：
-        1. 首次检测到 → 初始化KF状态为检测值
-        2. 持续检测到 → 正常KF滤波
-        3. 丢失目标   → KF预测
-        """
-        dt = time_diff()  # 计算时间差
-
         # ==========================================
-        # 情况1：没有检测到目标（laser_center为None）
+        # 情况1：没有检测到目标
         # ==========================================
-        if laser_center is None:
+        if target_position_3d is None:
             if self.use_kf:
-                self.lost += 1  # 丢失计数+1
+                self.lost += 1
                 
-                # 判断：丢失帧数还在允许范围内，且之前有预测过
                 if self.lost <= self.frame_add and self.predict:
-                    # ----- 进入预测模式 -----
-                    self.update_dt(dt)           # 更新时间步长
-                    self.kf_predict()            # KF预测下一步位置
-                    laser_center = self.get_kf_state()  # 获取预测位置
-                    self.if_find = True          # 仍标记为"找到"
-                    # 【新增2】保存预测位置，供draw_kf使用
-                    self.kf_position = laser_center
+                    # ----- 预测模式 -----
+                    self.kf_3d.predict(dt)
+                    filtered = self.kf_3d.get_state()
+                    self.position_filtered = filtered
+                    self.predicted_position = filtered
+                    self.if_find = True
+                    
+                    # 保存到轨迹
+                    self.trajectory.append(filtered)
+                    
+                    return filtered
                 else:
                     # ----- 完全丢失 -----
-                    self.reset_kf()              # 重置KF
-                    self.lost = 0                # 丢失计数归零
-                    self.predict = False         # 退出预测模式
-                    self.if_find = False         # 标记为"丢失"
-                    # 【新增3】清空位置
-                    self.kf_position = None
-                    return 0, 0
+                    self.reset_kf()
+                    self.lost = 0
+                    self.predict = False
+                    self.if_find = False
+                    self.position_filtered = None
+                    self.predicted_position = None
+                    return None
             else:
-                # 不使用KF，直接返回
                 self.if_find = False
-                self.kf_position = None
-                return 0, 0
+                self.position_filtered = None
+                return None
         
         # ==========================================
-        # 情况2：检测到目标（laser_center不为None）
+        # 情况2：检测到目标
         # ==========================================
         else:
-            self.predict = True      # 标记：可以进行预测了
-            self.if_find = True      # 标记：找到目标
-            self.lost = 0            # 丢失计数归零
+            self.predict = True
+            self.if_find = True
+            self.lost = 0
+            self.predicted_position = None
             
             if self.use_kf:
-                # ===== 【新增4】首次检测，快速初始化 =====
-                if not self.kf_cx.is_initialized:
-                    """
-                    首次检测到目标时：
-                    - KF默认状态是(0,0)，离真实值很远
-                    - 直接设置KF状态为当前检测值
-                    - 跳过KF滤波，直接用原始检测值
-                    - 下次检测时再启用KF
-                    """
-                    self.kf_cx.set_initial_state(laser_center[0])
-                    self.kf_cy.set_initial_state(laser_center[1])
-                    self.update_dt(dt)
-                    # laser_center保持不变，使用原始检测值
+                # 首次检测：初始化
+                if not self.kf_3d.is_initialized:
+                    self.kf_3d.set_initial_state(target_position_3d)
+                    self.position_filtered = target_position_3d
                 else:
-                    # ===== 正常KF流程 =====
-                    self.update_dt(dt)           # 更新时间步长
-                    self.kf_update(laser_center) # 用检测值更新KF
-                    self.kf_predict()            # KF预测
-                    laser_center = self.get_kf_state()  # 获取滤波后的值
+                    # 正常 EKF 流程
+                    self.kf_3d.predict(dt)
+                    self.kf_3d.update(target_position_3d)
+                    self.position_filtered = self.kf_3d.get_state()
+            else:
+                self.position_filtered = target_position_3d
             
-            # 【新增5】保存滤波后的位置，供draw_kf使用
-            self.kf_position = laser_center
+            # 保存到轨迹
+            if self.position_filtered is not None:
+                self.trajectory.append(self.position_filtered)
+            
+            return self.position_filtered
+    
+    def get_yaw_pitch(self):
+        """从滤波后的 3D 位置计算 (yaw, pitch)"""
+        if self.position_filtered is None:
+            return 0.0, 0.0
         
-        # 转换为角度
-        yaw, pitch = self.pixel_to_yaw_pitch(laser_center)
+        x, y, z = self.position_filtered
+        
+        # 计算角度（注意：z 是距离，x 是左右，y 是上下）
+        # 这里假设激光笔指向 z 轴正方向
+        yaw = math.atan2(x, z) * RAD2DEG
+        pitch = math.atan2(y, z) * RAD2DEG
+        
+        # 保存用于绘制
+        self.yaw_filtered = yaw
+        self.pitch_filtered = pitch
+        
         return yaw, pitch
-
-    # ===== 【新增6】绘制KF位置 =====
-    def draw_kf(self, frame, laser_pixel):
+    
+    def get_raw_yaw_pitch(self):
+        """从原始 3D 位置计算 (yaw, pitch)（用于对比）"""
+        if self.position_raw is None:
+            return 0.0, 0.0
+        
+        x, y, z = self.position_raw
+        yaw = math.atan2(x, z) * RAD2DEG
+        pitch = math.atan2(y, z) * RAD2DEG
+        
+        self.yaw_raw = yaw
+        self.pitch_raw = pitch
+        
+        return yaw, pitch
+    
+    def reset_kf(self):
+        """重置滤波器"""
+        self.kf_3d.reset()
+        self.position_filtered = None
+        self.predicted_position = None
+        self.trajectory.clear()
+    
+    # ===== 绘制方法 =====
+    def draw_debug(self, frame, laser_pixel):
         """
-        在图像上绘制KF滤波后的位置（橙色标记）
+        在图像上绘制调试信息
         
         参数:
             frame: 原始图像
             laser_pixel: 激光笔在图像中的像素坐标 (x, y)
         
-        注意:
-            kf_position存储的是相对于激光中心的偏移量
-            需要加上laser_pixel才能得到图像坐标
+        绘制内容:
+            1. 原始观测值（红色圆点）
+            2. 滤波后的位置（绿色圆点）
+            3. 预测位置（粉色叉号）
+            4. 历史轨迹（橙色曲线）
+            5. 原始 vs 滤波的连线（蓝色）
         """
-        if self.kf_position is None:
-            return frame
-        
         result = frame.copy()
-        
-        # 转换：图像坐标 = 激光像素坐标 + KF相对偏移
-        kf_x = int(laser_pixel[0] + self.kf_position[0])
-        kf_y = int(laser_pixel[1] + self.kf_position[1])
-        
-        # 检查是否在图像范围内
         h, w = result.shape[:2]
-        if kf_x < 0 or kf_x >= w or kf_y < 0 or kf_y >= h:
+        
+        # 安全检查
+        if self.position_raw is None and self.position_filtered is None:
             return result
         
-        # 橙色空心圆
-        cv2.circle(result, (kf_x, kf_y), 12, (0, 165, 255), 2)  # 外圈
-        # 标注
-        cv2.putText(result, "KF", (kf_x + 15, kf_y - 5),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+        # ===== 1. 绘制历史轨迹（橙色曲线） =====
+        if len(self.trajectory) > 1:
+            pts = []
+            for pos in self.trajectory:
+                # 将 3D 位置映射到图像坐标（需要相机模型）
+                # 简单映射：使用 laser_pixel 作为参考点
+                # 这里假设 trajectory 中的位置是相对偏移
+                x_img = int(laser_pixel[0] + pos[0] * 100)  # 缩放因子
+                y_img = int(laser_pixel[1] + pos[1] * 100)
+                if 0 <= x_img < w and 0 <= y_img < h:
+                    pts.append((x_img, y_img))
+            
+            if len(pts) > 1:
+                for i in range(1, len(pts)):
+                    cv2.line(result, pts[i-1], pts[i], (0, 165, 255), 2)
+        
+        # ===== 2. 绘制原始观测值（红色圆点） =====
+        if self.position_raw is not None:
+            # 将 3D 位置映射到图像坐标
+            raw_x = int(laser_pixel[0] + self.position_raw[0] * 100)
+            raw_y = int(laser_pixel[1] + self.position_raw[1] * 100)
+            if 0 <= raw_x < w and 0 <= raw_y < h:
+                cv2.circle(result, (raw_x, raw_y), 8, (0, 0, 255), -1)  # 红色实心
+                cv2.putText(result, "RAW", (raw_x + 10, raw_y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        
+        # ===== 3. 绘制滤波后的位置（绿色圆点） =====
+        if self.position_filtered is not None:
+            filt_x = int(laser_pixel[0] + self.position_filtered[0] * 100)
+            filt_y = int(laser_pixel[1] + self.position_filtered[1] * 100)
+            if 0 <= filt_x < w and 0 <= filt_y < h:
+                cv2.circle(result, (filt_x, filt_y), 10, (0, 255, 0), -1)  # 绿色实心
+                cv2.putText(result, "FILT", (filt_x + 12, filt_y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 2)
+                
+                # 连接原始和滤波（蓝色连线）
+                if self.position_raw is not None:
+                    raw_x = int(laser_pixel[0] + self.position_raw[0] * 100)
+                    raw_y = int(laser_pixel[1] + self.position_raw[1] * 100)
+                    if 0 <= raw_x < w and 0 <= raw_y < h:
+                        cv2.line(result, (raw_x, raw_y), (filt_x, filt_y), (255, 200, 0), 1)
+        
+        # ===== 4. 绘制预测位置（粉色叉号） =====
+        if self.predicted_position is not None:
+            pred_x = int(laser_pixel[0] + self.predicted_position[0] * 100)
+            pred_y = int(laser_pixel[1] + self.predicted_position[1] * 100)
+            if 0 <= pred_x < w and 0 <= pred_y < h:
+                cv2.drawMarker(result, (pred_x, pred_y), (255, 0, 255),
+                              markerType=cv2.MARKER_CROSS, markerSize=15, thickness=2)
+                cv2.putText(result, "PRED", (pred_x + 12, pred_y - 5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+        
+        # ===== 5. 显示角度信息 =====
+        if self.position_filtered is not None:
+            yaw, pitch = self.get_yaw_pitch()
+            if self.position_raw is not None:
+                raw_yaw, raw_pitch = self.get_raw_yaw_pitch()
+                cv2.putText(result, f"Raw Y/P: ({raw_yaw:.2f}, {raw_pitch:.2f})", 
+                           (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            cv2.putText(result, f"Filt Y/P: ({yaw:.2f}, {pitch:.2f})", 
+                       (10, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+        
+        # 状态显示
+        status = "TRACKING" if self.if_find else "LOST"
+        color = (0, 255, 0) if self.if_find else (0, 0, 255)
+        cv2.putText(result, f"Status: {status}", (10, 190),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         return result

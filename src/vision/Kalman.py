@@ -1,99 +1,128 @@
+# src/vision/Kalman.py
 import numpy as np
-import cv2
 
-class KalmanFilter:
-    def __init__(self, R=0.1, Q=0.01):
-        self.dt = 1/30  # 默认30fps的时间步长
-        self.kf = cv2.KalmanFilter(3, 1)  # 状态维度=3(位置+速度+加速度), 观测维度=1(位置)
+class AdaptiveEKF3D:
+    """
+    3D 自适应扩展卡尔曼滤波器 (EKF)
+    状态: [x, y, z, vx, vy, vz]  模型: 匀速 (Constant Velocity)
+    特点: 根据观测残差自动调节 Q，快速响应突变
+    """
+    def __init__(self, Q_base=0.5, R=1.0, dt=1/30.0):
+        """
+        Args:
+            Q_base: 基础过程噪声 (m/s²)
+            R: 观测噪声 (m)
+            dt: 初始时间步长 (秒)
+        """
+        self.dt = dt
+        self.dim = 6  # 3 位置 + 3 速度
         
-        # ===== 状态转移矩阵 A =====
-        # [1, dt, dt²/2]  表示: 新位置 = 旧位置 + 速度*dt + 0.5*加速度*dt²
-        # [0, 1,  dt    ]  表示: 新速度 = 旧速度 + 加速度*dt
-        # [0, 0,  1     ]  表示: 加速度不变(匀加速模型)
-        self.kf.transitionMatrix = np.array([[1, self.dt, 0.5 * self.dt**2],
-                                             [0, 1,      self.dt],
-                                             [0, 0,      1]], np.float32)
+        # 1. 状态向量 [x, y, z, vx, vy, vz]
+        self.x = np.zeros((6, 1), dtype=np.float32)
         
-        # ===== 观测矩阵 H =====
-        # [1, 0, 0] 表示: 我们只能观测到位置，观测不到速度和加速度
-        self.kf.measurementMatrix = np.array([[1, 0, 0]], np.float32)
+        # 2. 状态协方差矩阵 P
+        self.P = np.eye(6, dtype=np.float32) * 10.0
         
-        # ===== 过程噪声协方差 Q =====
-        # Q越大 → 越不相信模型预测 → 越相信观测值 → 响应快但噪声大
-        self.kf.processNoiseCov = np.eye(3, dtype=np.float32) * Q
+        # 3. 状态转移矩阵 F
+        self.F = np.eye(6, dtype=np.float32)
+        self._update_F(dt)
         
-        # ===== 观测噪声协方差 R =====
-        # R越大 → 越不相信观测值 → 越平滑但响应慢
-        self.kf.measurementNoiseCov = np.array([[R]], np.float32)
-
-        # ===== 初始状态 x = [位置, 速度, 加速度] = [0, 0, 0] =====
-        # 【问题】初始状态是(0,0,0)，离真实值很远
-        self.kf.statePost = np.zeros((3, 1), np.float32)
+        # 4. 观测矩阵 H（只观测位置）
+        self.H = np.zeros((3, 6), dtype=np.float32)
+        self.H[0, 0] = 1.0
+        self.H[1, 1] = 1.0
+        self.H[2, 2] = 1.0
         
-        # ===== 初始协方差矩阵 P =====
-        # 【问题】1000表示"非常不确定初始状态"
-        # 导致KF需要很多帧才能从(0,0,0)收敛到真实值
-        self.kf.errorCovPost = np.eye(3, dtype=np.float32) * 1000
+        # 5. 观测噪声协方差 R
+        self.R = np.eye(3, dtype=np.float32) * R
         
-        # ===== 【新增】初始化标志 =====
+        # 6. 过程噪声协方差 Q
+        self.Q_base_value = Q_base
+        self._update_Q_base(Q_base)
+        
         self.is_initialized = False
+        self._residual = np.zeros(3)
 
-    # ===== 【新增】设置初始状态方法 =====
-    def set_initial_state(self, value):
-        """
-        将KF的状态直接设置为观测值，跳过从0收敛的过程
+    def _update_F(self, dt):
+        """更新状态转移矩阵"""
+        self.F[0, 3] = dt  # x += vx * dt
+        self.F[1, 4] = dt  # y += vy * dt
+        self.F[2, 5] = dt  # z += vz * dt
+
+    def _update_Q_base(self, Q_base):
+        """更新基础过程噪声矩阵（匀速模型）"""
+        dt = self.dt
+        q = Q_base
+        # 位置噪声: q * dt^2 / 2, 速度噪声: q * dt
+        self.Q_base = np.eye(6, dtype=np.float32) * 0.01
+        self.Q_base[0, 0] = q * dt
+        self.Q_base[1, 1] = q * dt
+        self.Q_base[2, 2] = q * dt
+        self.Q_base[3, 3] = q * dt
+        self.Q_base[4, 4] = q * dt
+        self.Q_base[5, 5] = q * dt
+
+    def set_initial_state(self, position):
+        """设置初始状态（位置，速度设为0）"""
+        self.x[0, 0] = position[0]
+        self.x[1, 0] = position[1]
+        self.x[2, 0] = position[2]
+        self.is_initialized = True
+
+    def predict(self, dt=None):
+        """预测步骤"""
+        if dt is not None and dt != self.dt:
+            self.dt = dt
+            self._update_F(dt)
+            self._update_Q_base(self.Q_base_value)
         
-        参数:
-            value: 第一次检测到的值（位置）
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q_base
+        return self.get_state()
+
+    def update(self, measurement):
+        """更新步骤（带自适应）"""
+        z = np.array(measurement, dtype=np.float32).reshape(3, 1)
         
-        原理:
-            statePost = [[value],    ← 位置直接设为检测值
-                         [0],        ← 速度设为0（未知，先猜0）
-                         [0]]        ← 加速度设为0（未知，先猜0）
-        """
-        self.kf.statePost = np.array([[value], [0], [0]], np.float32)
-        self.is_initialized = True  # 标记已初始化
-
-    def predict(self):
-        """预测下一步状态"""
-        return self.kf.predict()
-
-    def update(self, value):
-        """用观测值更新状态"""
-        measurement = np.array([[value]], np.float32)
-        self.kf.correct(measurement)
-
-    def reset(self):
-        """重置KF状态"""
-        self.kf.statePost = np.zeros((3, 1), np.float32)
-        self.kf.errorCovPost = np.eye(3, dtype=np.float32) * 100
-        self.is_initialized = False  # 【新增】重置初始化标志
+        # 1. 计算残差
+        y = z - self.H @ self.x
+        self._residual = y.flatten()
+        
+        # 2. 自适应 Q：残差大时增大 Q
+        residual_norm = np.linalg.norm(self._residual)
+        if residual_norm > 0.1:
+            scale = min(15.0, residual_norm / 0.1)
+            Q_adaptive = self.Q_base * scale
+        else:
+            Q_adaptive = self.Q_base
+        
+        # 3. 重新计算预测协方差
+        P_pred = self.F @ self.P @ self.F.T + Q_adaptive
+        
+        # 4. 卡尔曼增益
+        S = self.H @ P_pred @ self.H.T + self.R
+        K = P_pred @ self.H.T @ np.linalg.inv(S)
+        
+        # 5. 状态更新
+        self.x = self.x + K @ y
+        self.P = (np.eye(6) - K @ self.H) @ P_pred
+        
+        self.is_initialized = True
+        return self.get_state()
 
     def get_state(self):
-        """获取当前状态（位置值）"""
-        return self.kf.statePost[0, 0]
-    
-    # ===== 【新增】获取完整状态方法 =====
+        """获取滤波后的位置 (x, y, z)"""
+        return (self.x[0, 0], self.x[1, 0], self.x[2, 0])
+
     def get_full_state(self):
-        """获取完整状态 [位置, 速度, 加速度]"""
-        return (self.kf.statePost[0, 0],  # 位置
-                self.kf.statePost[1, 0],  # 速度
-                self.kf.statePost[2, 0])  # 加速度
-    
-    # ===== 【新增】获取预测状态方法 =====
-    def get_predicted_state(self):
-        """获取预测状态（不更新）"""
-        return self.kf.statePre[0, 0]
-# 示例用法
-if __name__ == "__main__":
-    dt = 0.1  # 时间步长（秒）
-    kf = KalmanFilter(R=0.5, Q=0.1)
+        """获取完整状态 (位置 + 速度)"""
+        return self.x.flatten()
 
-    # 模拟传入的yaw数据
-    measurements = [1.0, 1.2, 1.1, 1.1, 1.3, 1.0, 0.9, 1.1, 5.0, 1.0, 1.2, 1.1, 1.1, 2.3, 1.0, 0.9, 1.1]
+    def get_speed(self):
+        """获取速度 (vx, vy, vz)"""
+        return (self.x[3, 0], self.x[4, 0], self.x[5, 0])
 
-    for yaw in measurements:
-        kf.predict()  # 进行预测
-        kf.update(yaw)  # 更新状态
-        predicted_yaw = kf.get_state()  # 获取预测的yaw
-        print(f"预测的 yaw: {predicted_yaw:.2f}")
+    def reset(self):
+        self.x = np.zeros((6, 1), dtype=np.float32)
+        self.P = np.eye(6, dtype=np.float32) * 100.0
+        self.is_initialized = False
