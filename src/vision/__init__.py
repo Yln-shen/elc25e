@@ -3,7 +3,7 @@
 """
 from .camera import Camera
 from .detector import Detector
-from .Kalman import AdaptiveEKF3D
+from .Kalman import AdaptiveEKF1D
 from .pnp import PNPSolver
 from .tracker import Tracker
 
@@ -11,7 +11,7 @@ __all__ = [
     "Camera",
     "Detector",
     "Board",
-    "AdaptiveEKF3D",
+    "AdaptiveEKF1D",
     "PNPSolver",
     "Tracker",
 ]
