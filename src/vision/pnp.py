@@ -1,129 +1,191 @@
-# pnp.py - PNP位姿解算器（添加中心点反投影）
+# src/vision/pnp.py
 import cv2
 import numpy as np
+import math
+
+RAD2DEG = 180 / math.pi
 
 class PNPSolver:
-    """PNP位姿解算器"""
+    """
+    PnP 解算器：将 2D 角点 + 3D 模型 + 相机内参 → 6DOF 位姿
+    
+    输入：
+        - 4 个 2D 角点（原始像素坐标，原点在图像左上角）
+        - 3D 世界模型（靶心为原点）
+        - 相机内参 K + 畸变系数 D
+    
+    输出：
+        - tvec: 靶心在相机坐标系下的位置 (x, y, z)，单位：米
+        - rvec: 靶子平面的姿态（旋转向量）
+        - yaw, pitch: 云台控制角
+        - distance: 靶子到相机的欧氏距离
+    """
     
     def __init__(self, target_width=0.262, target_height=0.174):
-        self.target_width = target_width
-        self.target_height = target_height
-        
-        half_w = target_width / 2
-        half_h = target_height / 2
-        
-        # 3D点顺序：左上→右上→右下→左下
-        self.object_points = np.array([
-            [-half_w, -half_h, 0],  # 左上
-            [ half_w, -half_h, 0],  # 右上
-            [ half_w,  half_h, 0],  # 右下
-            [-half_w,  half_h, 0],  # 左下
-        ], dtype=np.float32)
-        
-        # 靶子中心3D点（原点）
-        self.center_3d = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
-        
-        # pnp.py 中更新为：
+        """
+        参数：
+            camera_matrix: 3x3 内参矩阵 K
+            dist_coeffs:   畸变系数 (k1,k2,p1,p2,k3)
+            target_width:  靶子物理宽度（米），默认 0.262
+            target_height: 靶子物理高度（米），默认 0.174
+        """
         self.camera_matrix = np.array([
             [581.516, 0.0,    385.208],
             [0.0,    582.147, 181.477],
             [0.0,    0.0,     1.0    ]
         ], dtype=np.float32)
 
-        self.dist_coeffs = np.array([
+        self.dist_coeffs =  np.array([
             [0.263, -0.361, -0.023, 0.052, 0.395]
         ], dtype=np.float32)
-        
-        self.position = None
-        self.distance = None
-        self.yaw = None
-        self.pitch = None
 
-        self.rvec = None      # 旋转向量
-        self.tvec = None      # 平移向量
+        self.W = target_width
+        self.H = target_height
         
-        # ===== 【新增】中心点投影坐标 =====
-        self.center_projected = None  # PNP计算出的中心在图像上的投影
-        self.center_error = None      # PNP中心与实际检测中心的偏差
+        # 3D 世界模型：原点在靶心，矩形在 z=0 平面
+        self.object_points = self._build_object_model()
         
-        self._debug_count = 0
-        self._debug_max = 5
-
+        # 状态
+        self.tvec = None
+        self.rvec = None
+        self.success = False
+        self.reprojection_error = -1.0
+        self.center_projected = None  # 添加这一行
+        
+    def _build_object_model(self):
+        """
+        构建靶子的 3D 模型。
+        原点 (0,0,0) 在靶心，z=0 为靶子平面。
+        
+        返回顺序必须与 order_points 一致：
+        左上、右上、右下、左下
+        """
+        W_half = self.W / 2
+        H_half = self.H / 2
+        
+        pts = np.array([
+            [-W_half,  H_half, 0],  # 左上
+            [ W_half,  H_half, 0],  # 右上
+            [ W_half, -H_half, 0],  # 右下
+            [-W_half, -H_half, 0]   # 左下
+        ], dtype=np.float32)
+        
+        return pts
+    
     def solve(self, image_points):
-        if len(image_points) != 4:
-            self._reset()
-            return False
+        """
+        核心解算函数。
         
-        img_pts = np.array(image_points, dtype=np.float32).reshape(-1, 2)
+        参数：
+            image_points: np.array, shape (4, 2), dtype=np.float32
+                          4 个角点的原始像素坐标
+                          顺序：左上、右上、右下、左下
         
-        # ===== 调试输出 =====
-        if self._debug_count < self._debug_max:
-            print(f"\n=== PNP Debug Frame {self._debug_count} ===")
-            print(f"  角点0(TL): ({img_pts[0][0]:.0f}, {img_pts[0][1]:.0f})")
-            print(f"  角点1(TR): ({img_pts[1][0]:.0f}, {img_pts[1][1]:.0f})")
-            print(f"  角点2(BR): ({img_pts[2][0]:.0f}, {img_pts[2][1]:.0f})")
-            print(f"  角点3(BL): ({img_pts[3][0]:.0f}, {img_pts[3][1]:.0f})")
+        返回：
+            dict: {
+                'success': bool,
+                'tvec': (x, y, z),    # 米，靶心在相机坐标系的位置
+                'rvec': (rx, ry, rz), # 旋转向量
+                'yaw': float,         # 水平偏转角（度）
+                'pitch': float,       # 垂直俯仰角（度）
+                'distance': float,    # 欧氏距离（米）
+                'error': float,       # 重投影误差（像素）
+                'center_projected': (cx, cy)  # 靶心在图像上的投影坐标
+            }
+        """
+        result = {
+            'success': False,
+            'tvec': None,
+            'rvec': None,
+            'yaw': 0.0,
+            'pitch': 0.0,
+            'distance': 0.0,
+            'error': -1.0,
+            'center_projected': None  # 添加这一行
+        }
         
-        # PNP求解
-        success, rvec, tvec = cv2.solvePnP(
-            self.object_points,
-            img_pts,
-            self.camera_matrix,
-            self.dist_coeffs,
-            flags=cv2.SOLVEPNP_IPPE
-        )
+        # ===== 1. 基础检查 =====
+        if self.camera_matrix is None or self.dist_coeffs is None:
+            return result
+        
+        if image_points is None or len(image_points) != 4:
+            return result
+        
+        # ===== 2. PnP 解算 =====
+        # 使用 SOLVEPNP_IPPE：专门为共面 4 点设计，精度更高
+        try:
+            success, rvec, tvec = cv2.solvePnP(
+                self.object_points, 
+                image_points.reshape(4, 2), 
+                self.camera_matrix, 
+                self.dist_coeffs, 
+                flags=cv2.SOLVEPNP_IPPE
+            )
+        except cv2.error:
+            return result
         
         if not success:
-            self._reset()
-            if self._debug_count < self._debug_max:
-                print("  ❌ PNP求解失败!")
-            self._debug_count += 1
-            return False
+            return result
         
-        self.rvec = rvec
-        self.tvec = tvec
+        # ===== 3. 合理性检查 =====
+        tvec = tvec.flatten()
         
-        # 计算位置和角度
-        self.position = tvec.flatten()
-        x, y, z = self.position
-        self.distance = np.linalg.norm(self.position)
-        self.yaw = np.degrees(np.arctan2(x, z))
-        self.pitch = np.degrees(np.arctan2(y, z))
+        # 距离必须为正（靶子不能在相机后面）
+        if tvec[2] <= 0.01:
+            return result
         
-        # ===== 【新增】将靶子中心3D点投影到图像上 =====
-        center_proj, _ = cv2.projectPoints(
-            self.center_3d,      # 靶子中心 (0,0,0)
-            rvec, tvec,          # 旋转和平移向量
-            self.camera_matrix,
-            self.dist_coeffs
+        # 距离不能太远（超过 20 米一般是角点误匹配）
+        if tvec[2] > 20.0:
+            return result
+        
+        # ===== 4. 计算重投影误差 =====
+        reproj_points, _ = cv2.projectPoints(
+            self.object_points, rvec, tvec, self.camera_matrix, self.dist_coeffs
         )
-        self.center_projected = center_proj[0][0]  # (cx_p, cy_p)
+        reproj_points = reproj_points.reshape(-1, 2)
+        error = np.mean(np.linalg.norm(image_points - reproj_points, axis=1))
         
-        # ===== 【新增】计算与实际检测中心的偏差 =====
-        # 实际检测中心 = 四个角点的平均值
-        real_center = np.mean(img_pts, axis=0)
-        self.center_error = np.linalg.norm(self.center_projected - real_center)
+        # 重投影误差过大，说明解算不可靠
+        if error > 5.0:
+            return result
         
-        # 调试输出
-        if self._debug_count < self._debug_max:
-            print(f"  实际检测中心: ({real_center[0]:.1f}, {real_center[1]:.1f})")
-            print(f"  PNP投影中心: ({self.center_projected[0]:.1f}, {self.center_projected[1]:.1f})")
-            print(f"  中心偏差: {self.center_error:.1f} 像素")
-            print(f"  位置: x={x:.3f}, y={y:.3f}, z={z:.3f}m")
-            print(f"  距离: {self.distance:.3f}m")
-            print(f"  Yaw: {self.yaw:.1f}°, Pitch: {self.pitch:.1f}°")
-            self._debug_count += 1
+        # ===== 5. 计算靶心投影点（中心投影）=====
+        # 物体坐标系中的原点 (0,0,0) 就是靶心
+        center_3d = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+        center_projected, _ = cv2.projectPoints(
+            center_3d, rvec, tvec, self.camera_matrix, self.dist_coeffs
+        )
+        center_projected = center_projected.reshape(-1, 2)  # shape (2,)
         
-        return True
+        # ===== 6. 输出结果 =====
+        self.tvec = tvec
+        self.rvec = rvec.flatten()
+        self.success = True
+        self.reprojection_error = error
+        self.center_projected = center_projected  # 保存到实例
+        
+        x, y, z = tvec
+        distance = np.sqrt(x*x + y*y + z*z)
+        yaw = math.atan2(x, z) * RAD2DEG
+        pitch = math.atan2(-y, z) * RAD2DEG  # 注意符号：y 向上为正，pitch 抬头为正
+        
+        result = {
+            'success': True,
+            'tvec': (x, y, z),
+            'rvec': tuple(self.rvec),
+            'yaw': yaw,
+            'pitch': pitch,
+            'distance': distance,
+            'error': error,
+            'center_projected': center_projected  # 添加到返回结果
+        }
+        
+        return result
     
-    def _reset(self):
-        self.position = None
-        self.distance = None
-        self.yaw = None
-        self.pitch = None
-
-        self.rvec = None      # ← 添加
-        self.tvec = None      # ← 添加
-
-        self.center_projected = None
-        self.center_error = None
+    def is_valid(self):
+        """检查上次解算是否有效"""
+        return self.success
+    
+    def get_tvec(self):
+        """获取靶心在相机坐标系的位置"""
+        return self.tvec.copy() if self.tvec is not None else None
