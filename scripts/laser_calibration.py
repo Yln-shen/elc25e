@@ -1,4 +1,4 @@
-# src/control/laser_calibration.py
+# src/contr.py
 """
 激光笔位姿标定工具
 

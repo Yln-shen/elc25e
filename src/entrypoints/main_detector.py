@@ -71,8 +71,6 @@ def run_loop(cam, detector, pnp, laser, tracker):
             rvec_raw = pnp_result['rvec']
             
             # ===== 3. 激光补偿 =====
-            # laser_pos = 靶心在激光笔坐标系下的位置
-            # 这个位置就是激光笔应该瞄准的方向！
             laser_pos, _ = laser.compensate(tvec_raw, rvec_raw)
     
     # ===== 4. 滤波器对激光补偿后的位置进行平滑 =====
@@ -87,30 +85,33 @@ def run_loop(cam, detector, pnp, laser, tracker):
         yaw_filt, pitch_filt = tracker.get_yaw_pitch()
         x_f, y_f, z_f = filtered_xyz
         dist_filt = np.sqrt(x_f**2 + y_f**2 + z_f**2)
-        
-        # ===== 6. 显示滤波后的结果 =====
-        # cv2.putText(result, f"Filt Y/P: ({yaw_filt:.2f}, {pitch_filt:.2f}) deg", 
-        #            (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        # cv2.putText(result, f"Filt XYZ: ({x_f:.3f}, {y_f:.3f}, {z_f:.3f}) m", 
-        #            (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
     
-    # ===== 7. 发送角度到云台 =====
+    # ===== 6. 发送角度到云台 =====
     if yaw_filt is not None and pitch_filt is not None:
-        # laser_pos 已经包含了激光补偿
-        # yaw_filt/pitch_filt 是从滤波后的 laser_pos 计算的
-        # 所以云台转过去，激光笔就能打在靶心上！
-        # TODO: servo.set_target(yaw_filt, pitch_filt)
-        
         cv2.putText(result, f"SEND: ({yaw_filt:.2f}, {pitch_filt:.2f}) deg", 
-                   (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                   (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
     
-    # ===== 8. 状态变化时打印 =====
+    # ===== 7. 显示距离和补偿信息 =====
+    if laser.last_distance is not None:
+        cv2.putText(result, f"Dist: {laser.last_distance:.2f}m", 
+                   (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        
+        dx = laser.dx_base + laser.last_distance * laser.dx_slope
+        dy = laser.dy_base + laser.last_distance * laser.dy_slope
+        cv2.putText(result, f"Offset: dx={dx:+.1f}mm, dy={dy:+.1f}mm", 
+                   (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+    
+    # ===== 8. 操作提示 =====
+    cv2.putText(result, "H:调参窗口  S:保存  Q:退出", 
+               (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+    
+    # ===== 9. 状态变化时打印 =====
     if tracker.if_find:
         print_status_change("TRACKING", yaw_filt, pitch_filt, dist_filt, tvec_raw)
     else:
         print_status_change("LOST")
     
-    # ===== 9. 绘制Tracker调试信息 =====
+    # ===== 10. 绘制Tracker调试信息 =====
     result = tracker.draw_debug(result)
     
     cv2.imshow("Binary", binary)
@@ -146,15 +147,39 @@ def main():
     )
     
     print("\n" + "=" * 60)
-    print("按 'q' 退出")
+    print("激光补偿调参系统")
+    print("-" * 60)
+    print("  H : 打开/关闭调参滑块窗口")
+    print("  S : 保存当前参数")
+    print("  Q : 退出")
+    print("=" * 60 + "\n")
+    laser.print_status()
     
     while True:
         running, _ = run_loop(cam, detector, pnp, laser, tracker)
         if not running:
             break
         
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKey(1) & 0xFF
+        
+        if key == ord('q'):
             break
+        
+        elif key == ord('h'):
+            if laser.slider_window_open:
+                cv2.destroyWindow("Laser Adjust")
+                laser.slider_window_open = False
+                print("调参窗口已关闭")
+            else:
+                laser.create_slider_window()
+                print("调参窗口已打开")
+        
+        elif key == ord('s'):
+            laser.save_params()
+        
+        # 更新滑块窗口
+        if laser.slider_window_open:
+            laser.update_slider_window()
     
     cam.cam.release()
     cv2.destroyAllWindows()
